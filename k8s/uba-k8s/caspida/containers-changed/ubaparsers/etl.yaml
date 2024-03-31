@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etl-rc
+  namespace: splunkuba
+spec:
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: etl # modelname from ModelRegistry or serviceName from micro_services.json for others
+        uba-serviceName: etl # serviceName from micro_services.json
+        uba-groupName:   ubaparsers   # groupName  from micro_services.json
+        uba-displayName: UBA_ETL_Service # displayName from ModelRegistry or from micro_services.json for others
+    spec:
+      hostAliases : [{"ip":"10.141.39.52","hostnames":["sujits-uba54-1n-rhel88-containerization-k8s-docker","sujits-uba54-1n-rhel88-containerization-k8s-docker.sv.splunk.com"]}]
+      containers:
+      # Run the image
+      - name: etl
+        image: sujits-uba54-1N-rhel88-containerization-k8s-docker:5000/ubabase:latest
+        imagePullPolicy: Always
+        # StartScript: /opt/caspida/bin/UBAFunctionExecutor
+        command: [ /opt/caspida/bin/UBAFunctionExecutor, com.caspida.streaming.docker.launchers.GenericFunctionLauncher, --topic-name, RawDataTopic, -n, splunkuba, -f, etl, -c, com.caspida.streaming.docker.ETLFunction ]
+        env:
+        - name: UBA_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: UBA_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: UBA_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: UBA_HOSTIP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: UBA_NODENAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+
+        - name: UBA_POD_MAXHEAP
+          value: 2G
+        - name: UBA_POD_GROUPNAME
+          value: ubaparsers
+        - name: RUN_AS_USER # not used currently
+          value: 
+        - name: RUN_AS_GROUP
+          value: 
+
+        livenessProbe:
+          exec:
+            command: [ /opt/caspida/bin/ContainerLivenessProbe.sh ]
+          initialDelaySeconds: 900 # start after 15 minutes
+          periodSeconds: 900  # run every 15 minutes
+          timeoutSeconds: 60
+          failureThreshold: 2 # fail twice before deciding to restart
+
+        volumeMounts:
+        - mountPath: /var/vcap/sys/log/caspida/containerization
+          name: log-volume
+          readOnly: false
+        lifecycle:
+          postStart:
+            exec:
+              command: [ /opt/caspida/bin/ContainerLifecycleHook.sh, startup ]
+          preStop:
+            exec:
+              command: [/opt/caspida/bin/ContainerLifecycleHook.sh, shutdown]
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: log-volume
+        hostPath:
+        # directory location on host
+          path: /var/vcap/sys/log/caspida/containerization
+  selector:
+    matchLabels:
+      app: etl
+      uba-serviceName: etl
+      uba-groupName:   ubaparsers
+      uba-displayName: UBA_ETL_Service	

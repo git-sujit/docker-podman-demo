@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: uba-accounts-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      component: ubaAccounts
+  template:
+    metadata:
+      labels:
+        component: ubaAccounts
+    spec:
+      containers:
+        - name: uba-accounts
+          image: sujits259/uba-accounts:1.4-k8s
+          ports:
+            - containerPort: 8001
+          env:
+            - name: DB_HOST
+              value: mysqldb
+            - name: DB_NAME
+              value: uba-db
+            - name: DB_USERNAME
+              value: root
+            - name: DB_PASSWORD
+              value: mysecret

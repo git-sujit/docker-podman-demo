@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: uba-accounts-node-port-service
+spec:
+  type: NodePort
+  ports:
+    - port: 8001
+      targetPort: 8001
+  selector:
+    component: ubaAccounts
+
+

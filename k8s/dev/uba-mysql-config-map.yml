@@ -1,0 +1,7 @@
+apiVersion : v1
+kind : ConfigMap
+metadata:
+  name : uba-db-configs
+data:
+  host : mysqldb
+  dbName: uba-db

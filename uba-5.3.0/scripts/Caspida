@@ -1,0 +1,2979 @@
+#!/bin/bash
+
+##
+# Copyright (C) 2014-2022 - Splunk Inc., All rights reserved.
+# This is Splunk proprietary and confidential material and its use
+# is subject to license terms.
+##
+
+DIR=`dirname "$0"`
+source ${DIR}/CaspidaCommonEnv.sh
+source ${DIR}/CaspidaFunctions
+
+# for printing usage
+argv="$@"
+
+# for non-interactive setup: Caspida setup <filename>
+prompt_response=""
+caspida_cluster_nodes=""
+system_network_interface=""
+accept_eula=""
+# END: non-interactive setup
+
+is_non_interactive_setup() {
+  filename=$1
+  if [[ -z ${filename} ]]; then
+    return # interactive setup
+  fi
+
+  if [[ ! -r ${filename} ]]; then
+    echo "failed to read from: ${filename}, reverting to interactive setup"
+    return # interactive setup
+  fi
+
+  # need these tokens from the input file
+  prompt_response=`grep ^prompt.response= ${filename} | cut -d"=" -f2`
+  caspida_cluster_nodes=`grep ^caspida.cluster.nodes= ${filename} | cut -d"=" -f2`
+  system_network_interface=`grep ^system.network.interface= ${filename} | cut -d"=" -f2`
+  accept_eula=`grep ^accept.eula= ${filename} | cut -d"=" -f2`
+}
+
+usage() {
+    echo $0: ${argv} "--" "Not an option"
+    echo
+    echo Supported options
+    args="status|stop|start|start-all|stop-all|replace-properties|setup|setup-noformat|check_ssh|"
+    args+="stop-kafka|start-kafka|update-kafka-topics|cleanup-kafka-topics|stop-redis|start-redis|"
+    args+="stop-ui|start-ui|setupfirewall|setupfirewall-cluster|disablefirewall-cluster|enablefirewall-cluster|setuphadoopdirs|add-content-info|start-spark|stop-spark|"
+    args+="create-uba-site|sync-cluster|stop-datasources|start-datasources|add-disk|setup-containerization|remove-containerization|start-containers|stop-containers|"
+    args+="containerization-add-worker|containerization-remove-worker|rebuild-uba-images|containerization-create-token|start-splunk|stop-splunk|setup-splunk-forwarder|"
+    args+="tune-configuration-cluster|tune-postgres|setup-postgres-standby|stop-container-services|start-container-services|start-impala|stop-impala|clean-ircache"
+    echo "$0 $args"
+    exit 0
+}
+
+# Get myip to replace the address in config files
+# Dont change IPs: its done in replace-properties and also the system can have multiple IPs ..
+
+MYIP=`getmyip`
+echo "IP - $MYIP"
+
+get_zookeeper_quorum() {
+  zookeeperquorum=""
+  for i in `echo $zookeepernodelist | tr ',' '\n'`
+  do
+    zookeepernode=`echo $i | cut -d":" -f2`
+    zookeeperquorum=$zookeeperquorum$zookeepernode,
+  done
+  zookeeperquorum=`echo $zookeeperquorum | sed s'/,$//'`
+}
+
+#
+# Tune additional configurations for caspida based on number of nodes
+#
+caspida_tune_configuration() {
+# $1 - tunablefile (example - /opt/caspida/conf/deployment/recipes/caspida/caspidatunables-7_node.conf)
+# $2 - configfilepath (example - /opt/caspida/conf)
+# $3 - configfile (example - uba-env.properties)
+# $4 - delimeter for isolating the kv pairs (example - "=", ":")
+# $5 - 0 or 1 (example - 1 indicates the final kv pairs will be included under #BEGIN - #END block)
+# $6 - if set will append the overrides before the pattern in the config file
+
+  tunablefile=$1
+  configfilepath=$2
+  configfile=$3
+  delimiter=$4
+  tuningheader=$5
+  appendbefore=$6
+  overwrite=$7
+
+  tuninginfo=""
+  if [ "$tuningheader" = "1" ]; then
+    tuninginfo="#BEGIN overrides"
+  fi
+
+  # Get the tunablevariables from the tunable file based on the config file mentioned in the BEGIN and END block
+  tunablevars=`sed -n '/BEGIN '"$configfile"'/,/END '"$configfile"'/p' $tunablefile | sed '1d;$d'`
+  if [ $? -ne 0 ]; then
+    return 1
+  fi
+
+  if [ -z "$tunablevars" ]; then
+    echo "No tuning information found for $configfile"
+    return 1
+  fi
+
+  # Make a copy of config file that is being tuned
+  cp -p ${configfilepath}/${configfile} ${configfilepath}/${configfile}.tuning
+  grep -q "#BEGIN overrides" ${configfilepath}/${configfile}.tuning
+  if [ $? -eq 0 ]; then
+    sed '/^#BEGIN overrides/d' ${configfilepath}/${configfile}.tuning \
+          > ${configfilepath}/${configfile}.tuningtmp
+    mv -f ${configfilepath}/${configfile}.tuningtmp ${configfilepath}/${configfile}.tuning
+  fi
+
+  grep -q "#END overrides" ${configfilepath}/${configfile}.tuning
+  if [ $? -eq 0 ]; then
+    sed '/^#END overrides/d' ${configfilepath}/${configfile}.tuning \
+          > ${configfilepath}/${configfile}.tuningtmp
+    mv -f ${configfilepath}/${configfile}.tuningtmp ${configfilepath}/${configfile}.tuning
+  fi
+
+  while read var
+  do
+    i=`echo $var | awk -F ${delimiter} '{ print $1 }' | sed 's/[[:blank:]]*$//'`
+    if [ $? -ne 0 ]; then
+      return 1
+    fi
+
+    if [ -z "$appendbefore" ]; then
+      tuninginfo=$var
+      sed 's/'"$i"'.*'"$delimiter"'.*/'"$tuninginfo"'/' ${configfilepath}/${configfile}.tuning \
+        > ${configfilepath}/${configfile}.tuningtmp
+      mv -f ${configfilepath}/${configfile}.tuningtmp ${configfilepath}/${configfile}.tuning
+      sed 's/^#[ ]*'"$tuninginfo"'/'"$tuninginfo"'/' ${configfilepath}/${configfile}.tuning \
+        > ${configfilepath}/${configfile}.tuningtmp
+      mv -f ${configfilepath}/${configfile}.tuningtmp ${configfilepath}/${configfile}.tuning
+    else
+      grep -q "$i" $configfilepath/$configfile
+      if [ $? -eq 0 ]; then
+        sed '/.*'"$i"'.*'"$delimiter"'.*/d' ${configfilepath}/${configfile}.tuning \
+        > ${configfilepath}/${configfile}.tuningtmp
+        mv -f ${configfilepath}/${configfile}.tuningtmp ${configfilepath}/${configfile}.tuning
+      fi
+      if [ -z "$tuninginfo" ]; then
+        tuninginfo=$var
+      else
+        tuninginfo=${tuninginfo}\\$'\n'$var
+      fi
+    fi
+  done < <(echo "$tunablevars")
+
+  if [ "$tuningheader" = "1" ]; then
+    tuninginfo=${tuninginfo}\\$'\n'"#END overrides"
+  fi
+
+  if [ ! -z "$appendbefore" ]; then
+    sed 's/.*'"$appendbefore"'.*/'"$tuninginfo"'\n&/' \
+      ${configfilepath}/${configfile}.tuning > ${configfilepath}/${configfile}.tuningtmp
+    mv -f ${configfilepath}/${configfile}.tuningtmp ${configfilepath}/${configfile}.tuning
+  fi
+
+  echo "Determining changes for ${configfilepath}/${configfile}"
+  echo "Determining changes for ${configfilepath}/${configfile}" >> ${CASPIDA_OUT}
+
+  diff ${configfilepath}/${configfile} ${configfilepath}/${configfile}.tuning >> ${CASPIDA_OUT}
+  if [ $? -eq 0 ]; then
+    echo "There are no changes : ${configfilepath}/${configfile}" >> ${CASPIDA_OUT}
+    echo "There are no changes : ${configfilepath}/${configfile}"
+  else
+    echo "Updating : ${configfilepath}/${configfile}"
+  fi
+
+  echo
+
+  cp -f ${configfilepath}/${configfile} ${configfilepath}/${configfile}.pretune
+  # "overwrite=false": doesn't copy the file.tuning to file
+  if [ "${overwrite}" != "false" ]; then
+    mv -f ${configfilepath}/${configfile}.tuning ${configfilepath}/${configfile}
+  fi
+}
+
+#
+# Tune additional configurations for impala based on number of nodes
+#
+impala_tune_configuration() {
+  numnodes=$1
+  opt_sizing=${2:-""}
+  unset impala_cmd
+  echo "Tuning impala configuration for ${numnodes}${opt_sizing} node deployment"
+  echo "Tuning impala configuration for ${numnodes}${opt_sizing} node deployment" >> ${CASPIDA_OUT}
+  default_impala="${CASPIDA_DEPLOYMENT_CONF_DIR}/recipes/impala/etc/default/impala-${numnodes}${opt_sizing}_node.conf"
+  cp -v ${default_impala} ${default_impala}.tuning
+
+  if [ -e "${default_impala}" ]; then
+    impala_cmd[0]="sed -i -e 's#IMPALA_CATALOG_SERVICE_HOST=.*#IMPALA_CATALOG_SERVICE_HOST=${impalacatalognode}#g' \
+    ${default_impala}.tuning"
+
+    impala_cmd[1]="sed -i -e 's#IMPALA_STATE_STORE_HOST=.*#IMPALA_STATE_STORE_HOST=$impalastatestorenode#g' \
+    ${default_impala}.tuning"
+
+    runcommand "${impala_cmd[@]}"
+    if [[ $? -ne 0 ]]; then
+      echo "$(date): [ERROR] Failed to tune impala configuration. Fix errors and re-run again."
+      echo "$(date): [ERROR] Failed to tune impala configuration. Fix errors and re-run again." >> ${CASPIDA_OUT}
+      return 1
+    fi
+
+    diff ${default_impala}.tuning /etc/impala/conf/impala >> ${CASPIDA_OUT}
+    if [ $? -eq 0 ]; then
+      echo "There are no changes : /etc/impala/conf/impala" >> ${CASPIDA_OUT}
+      echo "There are no changes : /etc/impala/conf/impala"
+    else
+      echo "Updating /etc/impala/conf/impala with ${default_impala}"
+      echo "Updating /etc/impala/conf/impala with ${default_impala}" >> ${CASPIDA_OUT}
+      $SUDOCMD cp -v -f ${default_impala}.tuning /etc/impala/conf/impala
+      rm ${default_impala}.tuning
+    fi
+  else
+    echo "File ${default_impala} not present.."
+    echo "File ${default_impala} not present.." >> ${CASPIDA_OUT}
+  fi
+
+  echo "Removing impala tuning configuration from old location"
+  echo "Removing impala tuning configuration from old location" >> ${CASPIDA_OUT}
+  $SUDOCMD rm -f -v /etc/default/impala
+
+  return 0
+}
+
+#
+# Set platform specific variables for postgres
+#
+set_postgres_conf() {
+  if [ "${PLATFORM}" = "Red Hat" ] || [ "${PLATFORM}" = "CentOS" ]; then
+    POSTGRES_CONF=/var/lib/pgsql/${POSTGRES_VERSION}/data
+    POSTGRES_DATA=${POSTGRES_CONF}
+  else
+    POSTGRES_CONF=/etc/postgresql/${POSTGRES_VERSION}/main
+    POSTGRES_DATA=/var/lib/postgresql/${POSTGRES_VERSION}/main
+  fi
+  # POSTGRES_SERVICE is set from CaspidaFunctions
+
+  POSTGRES_CUSTOM=${POSTGRES_CONF}/conf.d
+
+  pg_default=${CASPIDA_DEPLOYMENT_CONF_DIR}/recipes/postgresql
+  pg_custom=${pg_default}/conf.d
+}
+
+# set number of nodes to numnodes variable
+set_numnodes_in_cluster() {
+  numnodes=`echo "$caspidaclusternodes" | awk -F "," '{ print NF }'`
+}
+#
+# Tune/Setup configurations for postgres based on number of nodes
+#
+postgres_tune_configuration() {
+  opt_sizing=${1:-""}
+  set_numnodes_in_cluster
+  set_postgres_conf
+
+  write_message "Tuning Postgres configuration for ${numnodes}${opt_sizing} node deployment"
+
+  i=0
+  unset postgres_cmd
+  if [ "${PLATFORM}" = "Red Hat" ] || [ "${PLATFORM}" = "CentOS" ]; then
+    postgres_cmd[((i++))]="cp ${pg_default}/postgresql.conf ${POSTGRES_CONF}/."
+    postgres_cmd[((i++))]="cp ${pg_default}/pg_hba.conf ${POSTGRES_CONF}/."
+  else
+    postgres_cmd[((i++))]="rm -rf ${POSTGRES_CONF}/*.conf"
+    postgres_cmd[((i++))]="cp ${pg_default}/*.conf ${POSTGRES_CONF}/."
+  fi
+
+  postgres_cmd[((i++))]="mkdir -p ${POSTGRES_CUSTOM}"
+
+  if [ -e ${POSTGRES_DATA}/recovery.conf ] || [ -e ${POSTGRES_DATA}/recovery.done ]; then
+    postgres_cmd[((i++))]="rm -f ${POSTGRES_CUSTOM}/recovery.\*"
+  fi
+
+  postgres_cmd[((i++))]="cp ${pg_custom}/common.conf ${POSTGRES_CUSTOM}/."
+  postgres_cmd[((i++))]="sed -i -e 's#<configdir>#${POSTGRES_CONF}#g' ${POSTGRES_CUSTOM}/common.conf"
+  postgres_cmd[((i++))]="sed -i -e 's#<datadir>#${POSTGRES_DATA}#g' ${POSTGRES_CUSTOM}/common.conf"
+  postgres_cmd[((i++))]="sed -i -e 's#<version>#${POSTGRES_VERSION}#g' ${POSTGRES_CUSTOM}/common.conf"
+  postgres_cmd[((i++))]="cp ${pg_custom}/postgresql-${numnodes}${opt_sizing}_node.conf ${POSTGRES_CUSTOM}/tunables.conf"
+  postgres_cmd[((i++))]="cp ${pg_custom}/primary.conf ${POSTGRES_CUSTOM}/."
+  postgres_cmd[((i++))]="cp ${pg_custom}/archiving.conf.sample ${POSTGRES_CUSTOM}/."
+  postgres_cmd[((i++))]="chown -R postgres:postgres ${POSTGRES_CONF}"
+
+  runcommand "${postgres_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to tune postgres configuration. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to tune postgres configuration. Fix errors and re-run again." >> ${CASPIDA_OUT}
+    return 1
+  fi
+
+  write_message "Done setting configurations on `hostname` .. "
+  return 0
+}
+
+postgres_tune_allnodes() {
+  set_numnodes_in_cluster
+
+  #update configuration on each node except standby node
+  for node in `echo $caspidaclusternodes | tr ',' '\n'`
+  do
+     if [ "$node" = "$postgresstandby" -a "$PostgresStandbyEnabled" = "true" ]
+     then
+       write_message "postgres_upgrade_configuration: skipping standby host: $postgresstandby"
+       continue
+     fi
+     ssh $node "( ${CASPIDA_BIN_DIR}/Caspida setuppostgres )"
+     echo "......................."
+  done
+}
+
+
+setup_postgres_standby() {
+  # If standby postgresql database is enabled, setup standby
+  if [ $PostgresStandbyEnabled = "true" ]; then
+    write_message "Setting up postgresql stand-by server on node: $postgresstandby ... "
+    ssh $postgresstandby "( ${CASPIDA_BIN_DIR}/Caspida setup-standby )"
+  else
+    write_message "Postgresql database standby is disabled, skipping standby setup."
+  fi
+}
+
+#
+# Setup postgres standby server which is replicated through streaming replication
+#
+setup_standby() {
+
+  PRIMARY=$postgresnode
+  STANDBY=$postgresstandby
+  REPLUSER=replication
+
+  set_numnodes_in_cluster
+  set_postgres_conf
+
+  write_message "Setting up ${STANDBY} as standby server for primary server ${PRIMARY}"
+
+  i=0
+  unset postgres_cmd
+  write_message "Stopping database server if running .. "
+  postgres_cmd[((i++))]="service ${POSTGRES_SERVICE} stop"
+
+  write_message "Cleaning up existing postgres cluster directory [${POSTGRES_DATA}] .."
+  postgres_cmd[((i++))]="-u postgres rm -rf ${POSTGRES_DATA}"
+  postgres_cmd[((i++))]="-u postgres rm -rf /var/log/postgres/*"
+
+  write_message "Creating standby cluster with current data from primary cluster databases .. "
+  postgres_cmd[((i++))]="-u postgres pg_basebackup -h ${PRIMARY} -D ${POSTGRES_DATA}  -U ${REPLUSER} -P --wal-method=stream"
+
+  write_message "Setting up replication configurations.."
+
+  if [ "${PLATFORM}" = "Red Hat" ] || [ "${PLATFORM}" = "CentOS" ]; then
+    postgres_cmd[((i++))]="cp ${pg_default}/postgresql.conf ${POSTGRES_CONF}/."
+    postgres_cmd[((i++))]="cp ${pg_default}/pg_hba.conf ${POSTGRES_CONF}/."
+  else
+    postgres_cmd[((i++))]="rm -rf ${POSTGRES_CONF}/*"
+    postgres_cmd[((i++))]="cp ${pg_default}/*.conf ${POSTGRES_CONF}/."
+  fi
+
+  postgres_cmd[((i++))]="mkdir -p ${POSTGRES_CUSTOM}"
+
+  postgres_cmd[((i++))]="cp ${pg_custom}/common.conf ${POSTGRES_CUSTOM}/."
+  postgres_cmd[((i++))]="sed -i -e 's#<configdir>#${POSTGRES_CONF}#g' ${POSTGRES_CUSTOM}/common.conf "
+  postgres_cmd[((i++))]="sed -i -e 's#<datadir>#${POSTGRES_DATA}#g' ${POSTGRES_CUSTOM}/common.conf "
+  postgres_cmd[((i++))]="cp ${pg_custom}/postgresql-${numnodes}_node.conf ${POSTGRES_CUSTOM}/tunables.conf"
+  postgres_cmd[((i++))]="cp ${pg_custom}/standby.conf ${POSTGRES_CUSTOM}/."
+  postgres_cmd[((i++))]="cp ${pg_custom}/recovery.conf ${POSTGRES_DATA}/recovery.conf"
+  postgres_cmd[((i++))]="sed -i -e 's#<primary>#${PRIMARY}#' ${POSTGRES_DATA}/recovery.conf"
+  postgres_cmd[((i++))]="chown -R postgres:postgres ${POSTGRES_CONF}"
+
+  write_message "Starting standby postgres cluster that will continue to keep itself in sync with primary."
+  postgres_cmd[((i++))]="service ${POSTGRES_SERVICE} start"
+
+  runcommand "${postgres_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to tune standby postgres configuration. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to tune standby postgres configuration. Fix errors and re-run again." >> ${CASPIDA_OUT}
+  fi
+
+  write_message "Completed setting up standby server."
+}
+
+# start / stop postgres service
+start_postgres() {
+  ssh $postgresnode "$SUDOCMD service ${POSTGRES_SERVICE} start >> ${CASPIDA_OUT} 2>&1"
+  return $?
+}
+
+stop_postgres() {
+  ssh $postgresnode "$SUDOCMD service ${POSTGRES_SERVICE} stop  >> ${CASPIDA_OUT} 2>&1"
+  return $?
+}
+
+hdfs_tune_configuration() {
+  numnodes=$1
+  opt_sizing=${2:-""}
+  ConfFile="/etc/hadoop/conf/hadoop-env.sh"
+  TemplateFile="${CASPIDA_DEPLOYMENT_CONF_DIR}/recipes/hadoop/${ConfFile}-${numnodes}${opt_sizing}_node"
+
+  if [[ -e "${TemplateFile}" ]]; then
+    ${SUDOCMD} cp -v "${TemplateFile}" "${ConfFile}"
+  fi
+}
+
+#
+# Tune additional configurations based on number of nodes and expanded sizing if applicable
+#
+tune_configuration() {
+  opt_sizing=${1:-""}
+  set_numnodes_in_cluster
+  CASPIDA_TUNABLES_DIR=${CASPIDA_DEPLOYMENT_CONF_DIR}/recipes/caspida
+  CASPIDA_TUNABLES_FILE=caspidatunables-${numnodes}${opt_sizing}_node.conf
+
+  if [ -e ${CASPIDA_TUNABLES_DIR}/caspidatunables-${numnodes}${opt_sizing}_node.conf ]; then
+    overwrite="false" # don't overwrite the file
+    SrcDIR=/opt/caspida/conf/deployment/templates/local_conf/deployment
+    UbaTuningProperties=uba-tuning.properties
+    appendBefore="#END Tunables"
+    echo "Tuning caspida configuration for ${numnodes}${opt_sizing} node deployment"
+    echo "Tuning caspida configuration for ${numnodes}${opt_sizing} node deployment" >> ${CASPIDA_OUT}
+    caspida_tune_configuration \
+      ${CASPIDA_TUNABLES_DIR}/caspidatunables-${numnodes}${opt_sizing}_node.conf \
+        ${SrcDIR} ${UbaTuningProperties} "=" 0 \
+          "${appendBefore}" ${overwrite}
+    CaspidaTuning=${SrcDIR}/${UbaTuningProperties}.tuning
+    Dest=/etc/caspida/local/conf/deployment/${UbaTuningProperties}
+    if [ -f ${CaspidaTuning} ]; then
+      cp -v ${CaspidaTuning} ${Dest}
+      rm -f ${CaspidaTuning}
+    fi
+    chmod 644 ${Dest}
+
+    overwrite="false" # don't overwrite the file
+    SrcDIR=/opt/caspida/conf/deployment/templates/local_conf/deployment
+    UbaSystemEnv=uba-system-env.sh
+    caspida_tune_configuration \
+      ${CASPIDA_TUNABLES_DIR}/${CASPIDA_TUNABLES_FILE} \
+        ${SrcDIR} ${UbaSystemEnv} "=" 0 "#END tunables" ${overwrite}
+
+    CaspidaTuning=${SrcDIR}/${UbaSystemEnv}.tuning
+    Dest=/etc/caspida/local/conf/deployment/${UbaSystemEnv}
+    if [ -f ${CaspidaTuning} ]; then
+      cp -v ${CaspidaTuning} ${Dest}
+      rm -f ${CaspidaTuning}
+    fi
+    chmod 755 ${Dest}
+
+    # Begin Case Tune caspida configuration
+    case "$numnodes" in
+      3) #3 node configuration
+         # nothing for now
+        ;;
+
+      5) #5 node configuration
+        caspida_tune_configuration \
+          ${CASPIDA_TUNABLES_DIR}/${CASPIDA_TUNABLES_FILE} \
+            ${CASPIDA_CONF_DIR}/kafka kafka.properties "=" 0
+        chmod 755 ${CASPIDA_CONF_DIR}/kafka/kafka.properties
+        ;;
+
+      7) #7 node configuration
+        caspida_tune_configuration \
+          ${CASPIDA_TUNABLES_DIR}/${CASPIDA_TUNABLES_FILE} \
+            ${CASPIDA_CONF_DIR}/kafka kafka.properties "=" 0
+        chmod 755 ${CASPIDA_CONF_DIR}/kafka/kafka.properties
+
+        caspida_tune_configuration \
+          ${CASPIDA_TUNABLES_DIR}/${CASPIDA_TUNABLES_FILE} \
+            /var/vcap/packages/spark/conf spark-env.sh "=" 0
+        chmod 755 /var/vcap/packages/spark/conf/spark-env.sh
+        ;;
+      20) #20 node configuration
+        caspida_tune_configuration \
+          ${CASPIDA_TUNABLES_DIR}/${CASPIDA_TUNABLES_FILE} \
+            /opt/caspida/bin CaspidaJobManager "=" 0
+        chmod 755 /opt/caspida/bin/CaspidaJobManager
+
+        caspida_tune_configuration \
+          ${CASPIDA_TUNABLES_DIR}/${CASPIDA_TUNABLES_FILE} \
+            /var/vcap/packages/spark/conf spark-env.sh "=" 0
+        chmod 755 /var/vcap/packages/spark/conf/spark-env.sh
+        ;;
+    esac
+    # End Case Tune caspida configuration
+  elif [ "${numnodes}" != "1" ]; then
+      echo "File ${CASPIDA_TUNABLES_DIR}/caspidatunables-${numnodes}${opt_sizing}_node.conf not present.."
+      echo "File ${CASPIDA_TUNABLES_DIR}/caspidatunables-${numnodes}${opt_sizing}_node.conf not present.." >> ${CASPIDA_OUT}
+  else
+      msg="Tuning caspida not required for 1 node deployment"
+      echo ${msg}
+      echo $(date): ${msg} >> ${CASPIDA_OUT}
+  fi
+
+  echo
+  impala_tune_configuration "${numnodes}" "${opt_sizing}"
+  postgres_tune_configuration "${opt_sizing}"
+  hdfs_tune_configuration "${numnodes}" "${opt_sizing}"
+  streaming_model_tune_configuration "${numnodes}" "${opt_sizing}"
+}
+
+streaming_model_tune_configuration() {
+  numnodes=$1
+  opt_sizing=${2:-""}
+  ConfFile="/opt/caspida/content/Splunk-Standard-Security/modelregistry/streaming/ModelRegistry.json"
+  TemplateFile="${CASPIDA_DEPLOYMENT_CONF_DIR}/recipes/caspida/streamingmodels/ModelRegistry-${numnodes}${opt_sizing}_node.json"
+
+  if [[ -e "${TemplateFile}" ]]; then
+    ${SUDOCMD} cp -v "${TemplateFile}" "${ConfFile}"
+  fi
+}
+
+#
+# Performs deployment configuration based on the nodes
+#  ** Not used **
+performContainerizationDeploymentConfiguration() {
+   HOSTIP=${MYIP}
+   numnodes=`echo "$caspidaclusternodes" | awk -F "," '{ print NF }'`
+   echo $caspidaclusternodes
+
+   echo "$(date): recreating $deploymentConfFileIPS" >> ${CASPIDA_OUT}
+
+   # need the $deploymentConfFileIPS: we use it to write out the hostAliases for
+   # each node -> ip in the cluster. See also GenericFunctionLauncher.java
+   rm -fv $deploymentConfFileIPS >> ${CASPIDA_OUT} 2>&1
+   cp -v $deploymentConfFile $deploymentConfFileIPS >> ${CASPIDA_OUT} 2>&1
+
+   KUBE_RCPS=${CASPIDA_CONTAINERIZATION_RECIPES_DIR}/orchestration/kubernetes
+
+   # ${caspidaclusternodes} is comma separated, replace it with a space for the for loop
+   caspidaclusternodes_lc=${caspidaclusternodes,,} #to-lower
+   for nodename in ${caspidaclusternodes_lc//,/ }
+   do
+     is_ip_address ${nodename}
+     isIP=$?
+
+     if [[ "${nodename}" = "localhost" || "${nodename}" = 127.* ]]; then
+       nodeipaddress=${HOSTIP} # dont use localhost/127.x.x.x: use the hostip
+     elif [[ ${isIP} -eq 0 ]]; then
+       nodeipaddress=${nodename} # its an IP address: dont have to change it
+     else
+       nodeipaddress=`getent ahostsv4 $nodename | grep -i $nodename | awk '{ print $1 }'`
+     fi
+
+     sed -i "s#\<${nodename}\>#${nodeipaddress}#gI" $deploymentConfFileIPS
+     echo "$nodename $nodeipaddress"
+   done
+
+   echo "$(date): DONE recreating $deploymentConfFileIPS" >> ${CASPIDA_OUT}
+}
+
+#
+# Common Hadoop setup for participating nodes
+#
+hadoop_common_setup() {
+
+  i=0
+  unset hadoop_cmd
+  hadoop_cmd[((i++))]='rm -rf /var/vcap/store/hadoop/*'
+  hadoop_cmd[((i++))]='mkdir -p /var/vcap/sys/tmp/nm-local-dir'
+  hadoop_cmd[((i++))]='chown -R hdfs:hdfs /var/vcap/store/hadoop/'
+  hadoop_cmd[((i++))]='chown -R yarn:yarn /var/vcap/sys/tmp/nm-local-dir'
+
+  #create directory for short-circuit
+  hadoop_cmd[((i++))]='mkdir -p /var/impala/run/hdfs-sockets'
+  hadoop_cmd[((i++))]='chown -R impala:impala /var/impala/run/hdfs-sockets'
+
+  if [ "$namenode" != "" ]; then
+    namenodehost="$namenode"
+    if [ $IsContainerDeployment = "true" ] && [ "$namenode" = "localhost" ]; then
+      namenodehost=`hostname`
+    fi
+    hadoop_cmd[((i++))]="sed -i -e 's#hdfs://.*:8020#hdfs://${namenodehost}:8020#g' \
+    /etc/hadoop/conf/core-site.xml"
+
+    hadoop_cmd[((i++))]='chown root:hadoop /etc/hadoop/conf/core-site.xml'
+  fi
+
+  if [ "$postgresnode" != "" ]; then
+    hadoop_cmd[((i++))]="sed -i -e 's#jdbc:postgresql://.*metastore#jdbc:postgresql://${postgresnode}/metastore#g' \
+    /etc/hive/conf/hive-site.xml"
+  fi
+
+  if [ "$impalanode" != "" ]; then
+    hadoop_cmd[((i++))]="sed -i -e 's#thrift://.*:9083#thrift://${hivenode}:9083#g' \
+    /etc/hive/conf/hive-site.xml"
+
+    hadoop_cmd[((i++))]="sed -i -e 's#IMPALA_CATALOG_SERVICE_HOST=.*#IMPALA_CATALOG_SERVICE_HOST=${impalacatalognode}#g' \
+    /etc/impala/conf/impala"
+
+    hadoop_cmd[((i++))]="sed -i -e 's#IMPALA_STATE_STORE_HOST=.*#IMPALA_STATE_STORE_HOST=${impalastatestorenode}#g' \
+    /etc/impala/conf/impala"
+  fi
+
+  hadoop_cmd[((i++))]='cp -f /opt/caspida/etc/hadoop/conf/hdfs-site.xml
+                                         /etc/hadoop/conf/'
+  hadoop_cmd[((i++))]='cp -f /etc/hadoop/conf/core-site.xml
+                                         /etc/hadoop/conf/hdfs-site.xml
+                                         /etc/hive/conf/hive-site.xml
+                                         /etc/impala/conf/'
+  hadoop_cmd[((i++))]='cp -f /etc/hadoop/conf/core-site.xml
+                                         /etc/hadoop/conf/hdfs-site.xml
+                                         /etc/hive/conf/'
+  runcommand "${hadoop_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to run hadoop_common_setup. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to run hadoop_common_setup. Fix errors and re-run again." >> ${CASPIDA_OUT}
+    return 1
+  fi
+
+  return 0
+}
+
+#
+# Hadoop Setup
+#
+hadoop_setup() {
+
+  i=0
+  unset hadoop_cmd
+
+  if [ "$1" = "dirs" ]; then
+    hadoop_cmd[((i++))]='rm -rf /var/vcap/store/hadoop/*'
+    hadoop_cmd[((i++))]='mkdir -p /var/vcap/sys/tmp/nm-local-dir'
+    hadoop_cmd[((i++))]='chown -R hdfs:hdfs /var/vcap/store/hadoop/'
+    hadoop_cmd[((i++))]='chown -R yarn:yarn /var/vcap/sys/tmp/nm-local-dir'
+
+    #create directory for short-circuit
+    hadoop_cmd[((i++))]='mkdir -p /var/impala/run/hdfs-sockets'
+    hadoop_cmd[((i++))]='chown -R impala:impala /var/impala/run/hdfs-sockets'\'''
+    runcommand "${hadoop_cmd[@]}"
+    if [[ $? -ne 0 ]]; then
+      echo "$(date): [ERROR] Failed to run hadoop_setup [1]. Fix errors and re-run again."
+      echo "$(date): [ERROR] Failed to run hadoop_setup [1]. Fix errors and re-run again." >> ${CASPIDA_OUT}
+      return 1
+    fi
+  fi
+
+  if [ "$1" != "dirs" ]; then
+    hadoop_common_setup
+    if [ $? -ne 0 ]; then
+      echo "$(date): [ERROR] Failed to run hadoop_common_setup. Fix errors and re-run again."
+      echo "$(date): [ERROR] Failed to run hadoop_common_setup. Fix errors and re-run again." >> ${CASPIDA_OUT}
+      return 1
+    fi
+
+    i=0
+    unset hadoop_cmd
+    hadoop_cmd[((i++))]='-u hdfs hdfs namenode -format'
+    hadoop_cmd[((i++))]='service hadoop-hdfs-namenode start'
+    runcommand "${hadoop_cmd[@]}"
+    if [[ $? -ne 0 ]]; then
+      echo "$(date): [ERROR] Failed to run hadoop_setup [2]. Fix errors and re-run again."
+      echo "$(date): [ERROR] Failed to run hadoop_setup [2]. Fix errors and re-run again." >> ${CASPIDA_OUT}
+      return 1
+    fi
+
+    i=0
+    unset hadoop_cmd
+    hadoop_cmd[((i++))]='hdfs dfs -mkdir -p /var/vcap/sys/log/hadoop-yarn'
+    hadoop_cmd[((i++))]='hdfs dfs -chown hdfs:supergroup /var/vcap/sys/log'
+    hadoop_cmd[((i++))]='hdfs dfs -chown yarn:mapred /var/vcap/sys/log/hadoop-yarn'
+    hadoop_cmd[((i++))]='hdfs dfs -rm -r -f /var/vcap/sys/tmp'
+    hadoop_cmd[((i++))]='hdfs dfs -mkdir -p /var/vcap/sys/tmp/hadoop-yarn/staging/history/done_intermediate'
+    hadoop_cmd[((i++))]='hdfs dfs -chmod -R 1777 /var/vcap/sys/tmp/hadoop-yarn/staging'
+    hadoop_cmd[((i++))]='hdfs dfs -chown hdfs:supergroup /var/vcap/sys/tmp'
+    hadoop_cmd[((i++))]='hdfs dfs -chown yarn:mapred /var/vcap/sys/tmp/hadoop-yarn/staging'
+    hadoop_cmd[((i++))]='hdfs dfs -rm -r -f /tmp'
+    hadoop_cmd[((i++))]='hdfs dfs -mkdir -p /tmp/hadoop-yarn/staging/history/done_intermediate'
+    hadoop_cmd[((i++))]='hdfs dfs -chown -R mapred:mapred /tmp/hadoop-yarn/staging'
+    hadoop_cmd[((i++))]='hdfs dfs -chmod -R 1777 /tmp'
+    hadoop_cmd[((i++))]='hdfs dfs -chmod -R 1777 /tmp/hadoop-yarn/staging'
+    hadoop_cmd[((i++))]='hdfs dfs -chown hdfs:supergroup /tmp'
+    hadoop_cmd[((i++))]='hdfs dfs -chown yarn:mapred /tmp/hadoop-yarn/staging'
+    hadoop_cmd[((i++))]='hdfs dfs -rm -r -f /hbase'
+    hadoop_cmd[((i++))]='hdfs dfs -mkdir -p /user/history'
+    hadoop_cmd[((i++))]='hdfs dfs -chmod -R 1777 /user/history'
+    hadoop_cmd[((i++))]='hdfs dfs -mkdir -p /user/yarn/.storm'
+    hadoop_cmd[((i++))]='hdfs dfs -chown -R yarn:yarn /user/yarn'
+    hadoop_cmd[((i++))]='hdfs dfs -chmod 1777 /user/yarn/.storm'
+    hadoop_cmd[((i++))]='hdfs dfs -chown -R mapred:hadoop /user/history'
+    hadoop_cmd[((i++))]='hdfs dfs -mkdir -p /user/hive'
+    hadoop_cmd[((i++))]='hdfs dfs -chown -R impala:impala /user/hive'
+    hadoop_cmd[((i++))]='hdfs dfs -mkdir -p '"${SPARK_HDFS}"'/spark-events/'
+    hadoop_cmd[((i++))]='hdfs dfs -chmod -R 1777 '"${SPARK_HDFS}"'/'
+    runcommandnosudo "${hadoop_cmd[@]}"
+    if [[ $? -ne 0 ]]; then
+      echo "$(date): [ERROR] Failed to run hadoop_setup [3]. Fix errors and re-run again."
+      echo "$(date): [ERROR] Failed to run hadoop_setup [3]. Fix errors and re-run again." >> ${CASPIDA_OUT}
+      return 1
+    fi
+  fi
+
+  i=0
+  unset hadoop_cmd
+  hadoop_cmd[((i++))]='hdfs dfs -mkdir -p /user/'"${CASPIDA_USER}"'/eventstore'
+  hadoop_cmd[((i++))]='hdfs dfs -mkdir -p /user/'"${CASPIDA_USER}"'/analytics'
+  hadoop_cmd[((i++))]='hdfs dfs -chown -R '"${CASPIDA_USER}"':'"${CASPIDA_GROUP}"' /user/'"${CASPIDA_USER}"''
+  hadoop_cmd[((i++))]='hdfs dfs -chown -R impala:'"${CASPIDA_GROUP}"' /user/'"${CASPIDA_USER}"'/analytics'
+  hadoop_cmd[((i++))]='hdfs dfs -chmod -R 775 /user/'"${CASPIDA_USER}"'/analytics'
+  runcommandnosudo "${hadoop_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to run hadoop_setup [4]. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to run hadoop_setup [4]. Fix errors and re-run again." >> ${CASPIDA_OUT}
+    return 1
+  fi
+
+  if [ "$1" != "dirs" ]; then
+    i=0
+    unset hadoop_cmd
+    hadoop_cmd[((i++))]='-u hdfs hdfs dfs -ls -R /'
+    hadoop_cmd[((i++))]='service hadoop-hdfs-namenode stop'
+    runcommand "${hadoop_cmd[@]}"
+    if [[ $? -ne 0 ]]; then
+      echo "$(date): [ERROR] Failed to run hadoop_setup [5]. Fix errors and re-run again."
+      echo "$(date): [ERROR] Failed to run hadoop_setup [5]. Fix errors and re-run again." >> ${CASPIDA_OUT}
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
+#
+# Zookeeper Setup
+#
+zookeeper_setup() {
+
+  myid=${1}
+  zoonode1=${2}
+  zoonode2=${3}
+  zoonode3=${4}
+
+  i=0
+  unset zookeeper_cmd
+  zookeeper_cmd[((i++))]='rm -rf /var/lib/zookeeper/*'
+  zookeeper_cmd[((i++))]='service zookeeper-server init --force'
+
+  if [ "$myid" != "" ]; then
+    zookeeper_cmd[((i++))]='echo '"${myid}"' | $SUDOCMD tee /var/lib/zookeeper/data/myid'
+    zookeeper_cmd[((i++))]='chmod 644 /var/lib/zookeeper/data/myid'
+    grep -q '^# Quorum setup' /etc/zookeeper/conf/zoo.cfg
+    if [[ $? -eq 0 ]]; then
+      zookeeper_cmd[((i++))]="sed -i -e 's/^# Quorum setup.*/# Quorum setup/' /etc/zookeeper/conf/zoo.cfg"
+    else
+      zookeeper_cmd[((i++))]="sed -i -e '$ a\ \n# Quorum setup' /etc/zookeeper/conf/zoo.cfg"
+    fi
+
+    grep -q '^server.*=' /etc/zookeeper/conf/zoo.cfg
+    if [[ $? -eq 0 ]]; then
+      zookeeper_cmd[((i++))]="sed -i -e '/^server.*=/d' /etc/zookeeper/conf/zoo.cfg"
+    fi
+
+    if [[ "$zoonode1" != ""  ]]; then
+      zookeeper_cmd[((i++))]="sed -i -e '$ a\server.1=$zoonode1:2888:3888'
+                              /etc/zookeeper/conf/zoo.cfg"
+    fi
+
+    if [[ "$zoonode2" != ""  ]]; then
+      zookeeper_cmd[((i++))]="sed -i -e '$ a\server.2=$zoonode2:2888:3888'
+                              /etc/zookeeper/conf/zoo.cfg"
+    fi
+
+    if [[ "$zoonode3" != ""  ]]; then
+      zookeeper_cmd[((i++))]="sed -i -e '$ a\server.3=$zoonode3:2888:3888'
+                              /etc/zookeeper/conf/zoo.cfg"
+    fi
+  fi
+
+  zookeeper_cmd[((i++))]='service zookeeper-server start'
+  zookeeper_cmd[((i++))]='service zookeeper-server stop'
+
+  runcommand "${zookeeper_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to run zookeeper_setup. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to run zookeeper_setup. Fix errors and re-run again." >> ${CASPIDA_OUT}
+    return 1
+  fi
+
+  return 0
+}
+
+# check if dir is a mountpoint
+isMounted() {
+  dir="$1"
+  command -v mountpoint > /dev/null 2>&1
+  local hasCmdMountPoint=$?
+  local mounted=1
+  if [[ ${hasCmdMountPoint} -eq 0 ]]; then
+    mountpoint -q "${dir}"
+    mounted=$?
+  else
+    # remove trailing slashes
+    dir=$(echo $dir | sed -e 's#/*$##')
+    mount | egrep "\s+${dir}\s+" > /dev/null 2>&1
+    mounted=$?
+  fi
+  return ${mounted}
+}
+
+#
+# Spark Setup
+#
+spark_setup() {
+  sparkmaster=`echo $sparkmasternode | awk -F ":" '{ print $1 }'`
+  i=0
+  unset spark_cmd
+
+  numnodes=`echo "$caspidaclusternodes" | awk -F "," '{ print NF }'`
+  CASPIDA_TUNABLES_DIR=${CASPIDA_DEPLOYMENT_CONF_DIR}/recipes/caspida
+  CASPIDA_TUNABLES_FILE=caspidatunables-${numnodes}_node.conf
+
+  # Spark tmp files will be stored under /var/vcap2 if exists.
+  # Create sym link from /var/vcap/sys/tmp/spark if /var/vcap2 exists.
+  if [ -d /var/vcap2 ]; then
+    spark_cmd[((i++))]='rm -rf /var/vcap/sys/tmp/spark'
+    spark_cmd[((i++))]='mkdir -p /var/vcap2/sys/tmp/spark'
+    spark_cmd[((i++))]='chown -R caspida:caspida /var/vcap2/sys'
+    spark_cmd[((i++))]='chmod -R 755 /var/vcap2/sys'
+    isMounted "/var/vcap2"
+    if [[ $? -eq 0 ]]; then
+      spark_cmd[((i++))]='ln -sv /var/vcap2/sys/tmp/spark /var/vcap/sys/tmp/spark'
+    fi
+  else
+    spark_cmd[((i++))]='mkdir -p /var/vcap/sys/tmp/spark/tmp'
+  fi
+  spark_cmd[((i++))]='mkdir -p /var/vcap/sys/tmp/spark/worker'
+  spark_cmd[((i++))]='mkdir -p /var/vcap/sys/tmp/spark/spark-events'
+  spark_cmd[((i++))]='mkdir -p /var/vcap/sys/tmp/spark/local'
+  spark_cmd[((i++))]='chown -R '"${CASPIDA_USER}"':'"${CASPIDA_GROUP}"' /var/vcap/sys/tmp/spark'
+  spark_cmd[((i++))]='cp -p /opt/caspida/conf/spark/* /var/vcap/packages/spark/conf'
+  if [ -d /var/vcap2 ]; then
+    spark_cmd[((i++))]='chown -R '"${CASPIDA_USER}"':'"${CASPIDA_GROUP}"' /var/vcap2/sys/tmp/spark'
+  fi
+  spark_cmd[((i++))]='ln -svf /etc/hive/conf/hive-site.xml /var/vcap/packages/spark/conf/hive-site.xml'
+  runcommand "${spark_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to run spark_setup[1]. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to run spark_setup[1]. Fix errors and re-run again." >> ${CASPIDA_OUT}
+    return 1
+  fi
+
+  if [ -e ${CASPIDA_TUNABLES_DIR}/${CASPIDA_TUNABLES_FILE} ]; then
+    caspida_tune_configuration \
+    ${CASPIDA_TUNABLES_DIR}/${CASPIDA_TUNABLES_FILE} \
+    /var/vcap/packages/spark/conf spark-env.sh "=" 0
+    chmod 755 /var/vcap/packages/spark/conf/spark-env.sh
+  fi
+
+  unset spark_cmd
+  i=0
+  spark_cmd[((i++))]="sed -i -e 's/^SPARK_MASTER_HOST.*/SPARK_MASTER_HOST=${sparkmaster}/g' /var/vcap/packages/spark/conf/spark-env.sh"
+  spark_cmd[((i++))]="rm -rf /var/vcap/packages/spark/conf/slaves"
+  runcommand "${spark_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to run spark_setup[2]. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to run spark_setup[2]. Fix errors and re-run again." >> ${CASPIDA_OUT}
+    return 1
+  fi
+
+  for sparkworker in `echo $sparkworkernode |  tr ',' '\n'`
+  do
+    unset sparkworker_cmd
+    sparkworker_cmd[0]="echo ${sparkworker} | $SUDOCMD tee -a /var/vcap/packages/spark/conf/slaves"
+    runcommand "${sparkworker_cmd[@]}"
+    if [[ $? -ne 0 ]]; then
+      echo "$(date): [ERROR] Failed to run spark_setup[3]. Fix errors and re-run again."
+      echo "$(date): [ERROR] Failed to run spark_setup[3]. Fix errors and re-run again." >> ${CASPIDA_OUT}
+      return 1
+    fi
+  done
+
+  unset sparkworker_cmd
+  sparkworker_cmd[0]='chown '"${CASPIDA_USER}"':'"${CASPIDA_GROUP}"' /var/vcap/packages/spark/conf/slaves'
+  runcommand "${sparkworker_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to run spark_setup[4]. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to run spark_setup[4]. Fix errors and re-run again." >> ${CASPIDA_OUT}
+    return 1
+  fi
+
+  return 0
+}
+
+caspida_add_disk() {
+  default_mount="/var/vcap"
+  specified_disk="$1"
+  specified_mount="$2"
+  Options="$3"
+  stopAll="true"
+  if [[ "${Options}" == "--skip-stop-all" ]]; then
+    stopAll="false"
+  fi
+
+  if [ -z ${specified_mount} ]; then
+    specified_mount=${default_mount}
+  else
+    # Remove trailing spaces
+    specified_mount=`echo "${specified_mount}" | sed -e 's/[[:space:]]*$//'`
+  fi
+
+  if [[ -z ${specified_disk} ]]; then
+    i=0
+    caspida_local_cmd[((i++))]='fdisk -l  > /tmp/partitions.txt 2>&1'
+    caspida_local_cmd[((i++))]='chmod 755 /tmp/partitions.txt'
+    runcommand "${caspida_local_cmd[@]}"
+    unset caspida_local_cmd
+
+    numdisks=`grep "doesn't contain a valid partition table" /tmp/partitions.txt | wc -l`
+    if [[ ${numdisks} -eq 0 ]]; then
+      DEVICE=""
+      echo "Failed to find a disk to add, rerun the command by specifying the disk on the command line"
+      echo "   Ex: $0 add-disk /dev/sdb"
+      return 2
+    fi
+
+    disks=`grep "doesn't contain a valid partition table" /tmp/partitions.txt | awk '{ print $2 }'`
+    if [[ ${numdisks} -gt 1 ]]; then
+      DEVICE=""
+      echo "found multiple disks: " $disks
+      echo "Found more than one disk to add, rerun the command by specifying the disk on the command line"
+      echo "   Ex: $0 add-disk /dev/sdb"
+      return 2
+    fi
+    DEVICE=$disks
+  else
+    DEVICE=${specified_disk} # the user specified one
+  fi
+
+  if [ -z ${DEVICE} ]; then
+    return 2
+  fi
+
+  # select the first partition for the new device
+  if [[ "${DEVICE}" =~ 'nvme' ]] ; then
+    partition="${DEVICE}p1"
+  else
+    partition="${DEVICE}1"
+  fi
+
+  # skip comments in fstab
+  FstabEntry=$(egrep -Ev "^\s*#" /etc/fstab | grep -w ${specified_mount})
+  if [[ -n ${FstabEntry} ]]; then
+    echo "  found /etc/fstab entry: ${FstabEntry}"
+    echo "found a ${specified_mount} in /etc/fstab: aborting"
+    return 3
+  fi
+
+  # check if the device is already mounted
+  grep "^${partition}" /proc/mounts
+  if [[ $? -eq 0 ]]; then
+    echo "  cannot use: ${partition}, its already mounted: aborting"
+    return 4
+  fi
+
+  if [[ "${CASPIDA_USER}" =~ [\<%\"] || "${zookeepernodelist}" =~ '[\<%\"]' ]]; then
+    # called without doing a replace-properties, assume no services are running
+    echo "skipping stop-all"
+  else
+    if [[ "${stopAll}" == "true" ]]; then
+      caspida_stop
+      startstopAllServices "stop"
+    else
+      echo "  skipping stop-all as requested"
+    fi
+  fi
+
+  PARTITION_INPUT_STR=$'n\n\n\n\n\nw\nY\n'
+  echo "$PARTITION_INPUT_STR" > /tmp/disk.txt
+
+  echo "  using disk: $DEVICE, creating a partition: ${partition}"
+  i=0
+  # Gdisk allows partition size capacity more than 2TB as compared to fdisk
+  caspida_local_cmd[((i++))]='gdisk '"${DEVICE}"' < /tmp/disk.txt'
+  runcommand "${caspida_local_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "add-disk failed in gdisk, see ${CASPIDA_OUT}: aborting"
+    return 4
+  fi
+
+  DEVICE="${partition}"
+  # wait for the device to get created: UBA-12226
+  MaxRetries=60 # try for 2 minutes
+  attempt=0
+  FoundBlockDevice="false"
+  while [[ ${attempt} -lt ${MaxRetries} ]]; do
+    if [[ -b ${DEVICE} ]]; then
+      echo "  found block device: $DEVICE"
+      FoundBlockDevice="true"
+      break # found the device
+    fi
+
+    # give it some time
+    echo "wait & retry for ${DEVICE} to get created: attempt=${attempt}/MaxRetries=${MaxRetries}"
+    ((attempt++))
+    sleep 2
+  done
+
+  if [[ "${FoundBlockDevice}" == "false" ]]; then
+    echo "add-disk failed, failed to find device: ${DEVICE}, aborting"
+    return 4
+  fi
+
+  echo "creating filesystem on: ${DEVICE}"
+  unset caspida_local_cmd
+  i=0
+  caspida_local_cmd[((i++))]='mkfs -t ext4 '"${DEVICE}"' '
+  runcommand "${caspida_local_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "add-disk failed, see ${CASPIDA_OUT}: aborting"
+    return 4
+  fi
+
+  unset caspida_local_cmd
+  if [[ "${specified_mount}" == "${default_mount}" ]]; then
+    VcapSave=/var/vcap.save
+    if [[ -d "${VcapSave}" ]]; then
+      echo "${VcapSave} exists, skipped moving /var/vcap to ${VcapSave}"
+    else
+      i=0
+      caspida_local_cmd[((i++))]='mv /var/vcap /var/vcap.save'
+      runcommand "${caspida_local_cmd[@]}"
+      if [[ $? -ne 0 ]]; then
+        echo "Unable to mv /var/vcap to /var/vcap.save, check if /var/vcap is present and run the script again"
+        return 4
+      fi
+      unset caspida_local_cmd
+    fi
+  fi
+
+  i=0
+  caspida_local_cmd[((i++))]='mkdir -p '"${specified_mount}"''
+  caspida_local_cmd[((i++))]='chmod 755 '"${specified_mount}"''
+  caspida_local_cmd[((i++))]='blkid'
+  runcommand "${caspida_local_cmd[@]}"
+  unset caspida_local_cmd
+
+  MaxRetries=24 # try for 2 minutes
+  attempt=0
+  DevUUID=""
+  while [[ ${attempt} -lt ${MaxRetries} ]]; do
+    DevUUID=$($SUDOCMD blkid -o value -s UUID ${DEVICE})
+    if [[ -n ${DevUUID} ]]; then
+      break # got the uuid
+    fi
+
+    # Sleep to get the correct blkid, sometimes it is seen that it takes time to populate
+    echo "wait & retry to get the correct blkid for ${DEVICE}: attempt=${attempt}/MaxRetries=${MaxRetries}"
+    ((attempt++))
+    sleep 5
+  done
+
+  if [[ -z ${DevUUID} ]]; then
+    echo "blkid failed to return a block id for ${DEVICE}: aborting"
+    return 6
+  fi
+
+  i=0
+  caspida_local_cmd=""
+  DevUUID="UUID=${DevUUID}"
+  echo "${DevUUID} ${specified_mount} ext4 errors=remount-ro 0       1" > /tmp/disk.txt
+  caspida_local_cmd[((i++))]='cat /tmp/disk.txt | ${SUDOCMD} tee -a /etc/fstab'
+  runcommandnosudo "${caspida_local_cmd[@]}"
+  unset caspida_local_cmd
+
+  i=0
+  echo "mounting ${DEVICE} (${DevUUID}) on ${specified_mount}"
+  caspida_local_cmd[((i++))]='mount -a'
+  runcommand "${caspida_local_cmd[@]}"
+  unset caspida_local_cmd
+
+  if [[ "${specified_mount}" == "${default_mount}" ]]; then
+    i=0
+    mount | grep "/var/vcap" > /dev/null
+    if [ $? -eq 0 ]; then
+      echo "copying packages to /var/vcap"
+      caspida_local_cmd[((i++))]='cp -pr /var/vcap.save/* /var/vcap/'
+      runcommand "${caspida_local_cmd[@]}"
+      unset caspida_local_cmd
+    else
+      echo "Error Adding Additional Disk, Reverting Back"
+      caspida_local_cmd[((i++))]='rmdir -v /var/vcap'
+      caspida_local_cmd[((i++))]='mv -v /var/vcap.save /var/vcap'
+      runcommand "${caspida_local_cmd[@]}"
+      unset caspida_local_cmd
+    fi
+  fi
+
+  return 0
+}
+
+caspida_cert() {
+  HOSTIP=${MYIP}
+  i=0
+  unset caspida_local_cmd
+  caspida_local_cmd[((i++))]='rm -rf /var/vcap/store/caspida/certs/*'
+  runcommand "${caspida_local_cmd[@]}"
+  if [ $? -ne 0 ]; then
+    echo "$(date): [ERROR] Failed to run caspida_cert. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to run caspida_cert. Fix errors and re-run again." >> ${CASPIDA_OUT}
+    return 1
+  fi
+
+  /opt/caspida/bin/CaspidaCert.sh US CA "San Francisco" Splunk "" "" /var/vcap/store/caspida/certs
+
+  return 0
+}
+
+create_caspida_local_dirs() {
+  ETL_LOCAL_DIRS=""
+  for d in etl/configuration etl/morphlines/static etl/morphlines/include etl/setup etl/geo-db/maxmind; do
+    ETL_LOCAL_DIRS+="${CASPIDA_LOCAL_CONF_DIR}/$d "
+  done
+
+  ${SUDOCMD} mkdir -p ${ETL_LOCAL_DIRS}
+  ${SUDOCMD} chown -R ${CASPIDA_USER}:${CASPIDA_GROUP} ${CASPIDA_LOCAL_DIR}
+}
+
+#
+# Caspida dirs setup
+#
+caspida_dir_setup() {
+  # Ensure that caspida.out file is created with correct permissions for logging
+  i=0
+  unset caspida_local_cmd
+  numnodes=`echo "$caspidaclusternodes" | awk -F "," '{ print NF }'`
+
+  caspida_local_cmd[((i++))]='mkdir -p /var/vcap/sys/log/caspida'
+  caspida_local_cmd[((i++))]='chmod 755 /var/vcap/sys/log/caspida'
+  caspida_local_cmd[((i++))]='chown '"${CASPIDA_USER}"':'"${CASPIDA_GROUP}"' /var/vcap/sys/log/caspida'
+  caspida_local_cmd[((i++))]='touch /var/vcap/sys/log/caspida/caspida.out'
+  caspida_local_cmd[((i++))]='chmod 666 /var/vcap/sys/log/caspida/caspida.out'
+  caspida_local_cmd[((i++))]='chown '"${CASPIDA_USER}"':'"${CASPIDA_GROUP}"' /var/vcap/sys/log/caspida/caspida.out'
+  caspida_local_cmd[((i++))]='mkdir -p /var/vcap/sys/tmp/caspida'
+  caspida_local_cmd[((i++))]='chown -R '"${CASPIDA_USER}"':'"${CASPIDA_GROUP}"' /var/vcap/sys/tmp'
+  caspida_local_cmd[((i++))]='chmod -R 755 /var/vcap/sys/tmp'
+  caspida_local_cmd[((i++))]='rm -rf /var/vcap/store/kafka/*'
+  caspida_local_cmd[((i++))]='rm -rf /var/vcap/store/kafka/.[a-Z]*'
+  caspida_local_cmd[((i++))]='mkdir -p /var/vcap/store/kafka'
+  caspida_local_cmd[((i++))]='chmod 755 /var/vcap/store/kafka'
+  caspida_local_cmd[((i++))]='mkdir -p /var/vcap/sys/log/kafka'
+  caspida_local_cmd[((i++))]='chmod 755 /var/vcap/sys/log/kafka'
+  caspida_local_cmd[((i++))]='chown '"${CASPIDA_USER}"':'"${CASPIDA_GROUP}"' /var/vcap/store/kafka'
+  caspida_local_cmd[((i++))]='chown '"${CASPIDA_USER}"':'"${CASPIDA_GROUP}"' /var/vcap/sys/log/kafka'
+  caspida_local_cmd[((i++))]='mkdir -p /var/vcap/store/timeseries/influxdb'
+  caspida_local_cmd[((i++))]='chown -R influxdb:influxdb /var/vcap/store/timeseries/influxdb'
+  caspida_local_cmd[((i++))]='mkdir -p /var/vcap/sys/log/influxdb'
+  caspida_local_cmd[((i++))]='chmod 755 /var/vcap/sys/log/influxdb'
+  caspida_local_cmd[((i++))]='chown -R influxdb:influxdb /var/vcap/sys/log/influxdb'
+  caspida_local_cmd[((i++))]='rm -rf /var/log/influxdb'
+  caspida_local_cmd[((i++))]='ln -sv /var/vcap/sys/log/influxdb /var/log/influxdb'
+  caspida_local_cmd[((i++))]='rm -rf /var/log/impala'
+  caspida_local_cmd[((i++))]='mkdir -p /var/vcap/sys/log/impala'
+  caspida_local_cmd[((i++))]='chmod 755 /var/vcap/sys/log/impala'
+  caspida_local_cmd[((i++))]='chown -R impala:impala /var/vcap/sys/log/impala'
+  caspida_local_cmd[((i++))]='ln -sv /var/vcap/sys/log/impala /var/log/impala'
+  caspida_local_cmd[((i++))]='cp -f /opt/caspida/etc/default/* /etc/default/'
+  caspida_local_cmd[((i++))]='ln -vsf /opt/caspida/etc/init.d/* /etc/init.d/'
+  caspida_local_cmd[((i++))]='cp --remove-destination -v /opt/caspida/etc/logrotate.d/splunkuba /etc/logrotate.d/'
+  caspida_local_cmd[((i++))]='chown root:root /etc/logrotate.d/splunkuba'
+  caspida_local_cmd[((i++))]='chmod 0644 /etc/logrotate.d/splunkuba'
+  caspida_local_cmd[((i++))]='chmod 440 /opt/caspida/etc/sudoers.d/*'
+  caspida_local_cmd[((i++))]='mkdir -p /var/vcap/sys/log/caspida/containerization'
+  caspida_local_cmd[((i++))]='chmod 755 /var/vcap/sys/log/caspida/containerization'
+  caspida_local_cmd[((i++))]='chown -R caspida:caspida /var/vcap/sys/log/caspida/containerization'
+
+  if [[ "${KERNEL_RELEASE}" == "el7" || "${PLATFORM}" == "Ubuntu" || "${KERNEL_RELEASE}" = "el8" ]]; then
+      caspida_local_cmd[((i++))]='cp -fv /opt/caspida/etc/systemd/system/*.service /etc/systemd/system/'
+      #influxdb.service is in /usr/lib/systemd/system/ for RHEL and /lib/systemd/system/ for Ubuntu
+      # Remove and copy to the right location, see below.
+      caspida_local_cmd[((i++))]='rm -fv /etc/systemd/system/influxdb.service'
+  fi
+
+  if [[ "${KERNEL_RELEASE}" == "el7" || "${KERNEL_RELEASE}" = "el8" ]]; then
+    caspida_local_cmd[((i++))]='cp -fv /opt/caspida/etc/systemd/system/influxdb.service /usr/lib/systemd/system/'
+  fi
+
+  if [[ "${PLATFORM}" == "Ubuntu" ]]; then
+    caspida_local_cmd[((i++))]='cp -fv /opt/caspida/etc/systemd/system/influxdb.service /lib/systemd/system/'
+  fi
+
+  if [[ "${KERNEL_RELEASE}" == "el7" || "${PLATFORM}" == "Ubuntu" || "${KERNEL_RELEASE}" = "el8" ]]; then
+    caspida_local_cmd[((i++))]='systemctl disable influxdb'
+    caspida_local_cmd[((i++))]='rm -fv /etc/systemd/system/influxd*.service'
+  fi
+
+  caspida_local_cmd[((i++))]='cp --remove-destination -v /opt/caspida/etc/security/limits.d/caspida.conf /etc/security/limits.d/'
+  caspida_local_cmd[((i++))]='mkdir -p /var/vcap/sys/tmp/impala'
+  caspida_local_cmd[((i++))]='chown -R impala:impala /var/vcap/sys/tmp/impala'
+  caspida_local_cmd[((i++))]="usermod -a -G redis ${CASPIDA_USER}"
+
+  # docker stuff
+  if [[ -d /var/lib/docker && ! -L /var/lib/docker ]]; then # directory & not a symlink
+    caspida_local_cmd[((i++))]='rm -rfv /var/vcap/store/docker'
+    caspida_local_cmd[((i++))]='mv /var/lib/docker /var/vcap/store/docker'
+    caspida_local_cmd[((i++))]='rm -rf /var/lib/docker'
+    caspida_local_cmd[((i++))]='ln -sv /var/vcap/store/docker /var/lib/docker'
+  fi
+
+  caspida_local_cmd[((i++))]='mkdir -p /var/vcap/sys/log/containers'
+  caspida_local_cmd[((i++))]='rm -rf /var/log/containers'
+  caspida_local_cmd[((i++))]='ln -sv /var/vcap/sys/log/containers /var/log/containers'
+
+  runcommand "${caspida_local_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to run caspida_dir_setup. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to run caspida_dir_setup. Fix errors and re-run again." >> ${CASPIDA_OUT}
+    return 1
+  fi
+
+  # create the local conf dirs
+  create_caspida_local_dirs
+
+  # Tune the impala configuration based on number of nodes since the default configuration
+  # copied in the steps above for /etc/impala/conf/impala
+  impala_tune_configuration "${numnodes}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to run impala_tune_configuration ${numnodes}. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to run impala_tune_configuration ${numnodes}. Fix errors and re-run again." >> ${CASPIDA_OUT}
+    return 1
+  fi
+
+  return 0
+}
+
+caspida_site_setup () {
+  for i in `ls -1 /opt/caspida/setup/*.erb`
+  do
+    echo configuring $i
+    configFile=`echo $i | awk -F ".erb" '{ print $1 }'`
+    echo $configFile
+    /opt/caspida/bin/PropsReplace.rb $i /opt/caspida/setup/caspida-setup.properties > $configFile
+  done
+}
+
+eula () {
+  echo -en "\ec"
+
+  # ${accept_eula} used by automation tests
+  if [[ ! -f ${CaspidaEulaAccepted} && -f ${CASPIDA_CONF_DIR}/${SPLUNK_EULA} && "${accept_eula}" != [yY] ]]; then
+    cat ${CASPIDA_CONF_DIR}/${SPLUNK_EULA} | less --quit-at-eof
+    echo "Accept License Agreement."
+    echo -n "(Yy/Nn) : "
+
+    read x
+    if [[ "$x" =~ [yY] ]]; then
+      echo ""
+    else
+      echo "Setup Cancelled as per user request"
+      exit 0
+    fi
+  fi
+
+  # create the eula accepted file
+  $SUDOCMD touch ${CaspidaEulaAccepted}
+  local status=$?
+  if [[ ${status} -ne 0 ]]; then
+    write_message "failed to create EULA acceptance state, aborting"
+    write_message "  did add-disk /dev/xxxxx /var/vcap succeed ?"
+    exit 2
+  fi
+}
+
+install_splunk() {
+  i=0
+
+  # Installed splunk forwarder shipped in /opt/caspida/license
+  splunk_forwarder_tgz='splunk-9.1.0.1-x86_64.tgz'
+  splunk_forwarder_license_file='6786642141e923ec4c11911ba049faff.xml.lic'
+
+  unset caspida_local_cmd
+  caspida_local_cmd[((i++))]="mkdir -p /opt/splunk"
+  caspida_local_cmd[((i++))]="chown -R caspida:caspida /opt/splunk/"
+  runcommand "${caspida_local_cmd[@]}"  # runs with sudo
+  if [[ $? -ne 0 ]]; then
+    write_message "install_splunk failed to mkdir/chown. Fix errors and re-run again."
+    exit 2
+  fi
+
+  i=0
+  unset caspida_local_cmd
+  caspida_local_cmd[((i++))]="tar -xf /opt/caspida/license/${splunk_forwarder_tgz} -C /opt/"
+  caspida_local_cmd[((i++))]="touch /var/vcap/sys/tmp/caspida/license.tmp"
+  caspida_local_cmd[((i++))]="touch -r /var/vcap/sys/tmp/caspida/license.tmp /var/vcap/sys/tmp/caspida/license.tmp /opt/splunk/etc/licenses/enterprise/${splunk_forwarder_license_file}"
+  caspida_local_cmd[((i++))]="rm -f /var/vcap/sys/tmp/caspida/license.tmp"
+  runcommandnosudo "${caspida_local_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    write_message "Failed to run install_splunk. Fix errors and re-run again."
+    exit 3
+  fi
+}
+
+install_splunk_cluster() {
+  for node in `echo $caspidaclusternodes | tr ',' '\n'`
+   do
+     ssh $node "(
+       $(typeset -f install_splunk runcommand runcommandnosudo write_message)
+       $(typeset -p SUDOCMD CASPIDA_OUT)
+       echo "$node: installing splunk..."
+       install_splunk
+       exit 0
+     )"
+
+     if [[ $? -ne 0 ]]; then
+       write_message "Failed to install_splunk on ${node}. Fix errors and re-run again."
+       exit 3
+     fi
+   done
+
+   # enable scripts to forward uba_summary stats only on one node in the cluster.
+   # this will be initiated during setup/upgrade, so no need to add firstNode check here
+   enable_uba_summary_forwarding
+   return 0
+}
+
+iptables_rules_setup () {
+  i=0
+  unset iptables_rules_cmd
+  local interface=`getinterface`
+
+  if [ "${PLATFORM}" = "Red Hat" ] || [ "${PLATFORM}" = "CentOS" ]; then
+    if [ "${KERNEL_RELEASE}" = "el6" ];  then
+      iptables_rules_cmd[((i++))]="$SUDOCMD chkconfig iptables on"
+      iptables_rules_cmd[((i++))]="$SUDOCMD service iptables restart"
+    fi
+  fi
+
+  iptables_rules_cmd[((i++))]='iptables -P INPUT ACCEPT'
+  iptables_rules_cmd[((i++))]='iptables -F'
+  iptables_rules_cmd[((i++))]='iptables -A INPUT -p tcp --dport 22 -j ACCEPT'
+  iptables_rules_cmd[((i++))]='iptables -A INPUT -p tcp --dport 443 -j ACCEPT'
+
+  # custom UI port if configured
+  uiPort=$(readProperty ui.httpsPort)
+  if [[ -n "${uiPort}" ]]; then
+    iptables_rules_cmd[((i++))]="iptables -A INPUT -p tcp --dport ${uiPort} -j ACCEPT"
+  fi
+
+  #
+  # Example to add multiple ports
+  # iptables_rules_cmd[((i++))]='iptables -A INPUT -p tcp --match multiport --dports 4045,4242,7474,5432,9002,8080,8090,9870,60010 -j ACCEPT'
+  #
+
+  iptables_rules_cmd[((i++))]='iptables -A INPUT -p tcp --match multiport --dports 10000:20000 -j ACCEPT'
+  iptables_rules_cmd[((i++))]='iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT'
+  iptables_rules_cmd[((i++))]='iptables -P INPUT DROP'
+  iptables_rules_cmd[((i++))]='iptables -P FORWARD DROP'
+  iptables_rules_cmd[((i++))]='iptables -P OUTPUT -o $interface -j ACCEPT'
+  iptables_rules_cmd[((i++))]='iptables -P OUTPUT -o lo -j ACCEPT'
+  iptables_rules_cmd[((i++))]='iptables -A INPUT -i lo -s 127.0.0.1 -j ACCEPT'
+  iptables_rules_cmd[((i++))]="iptables -A INPUT -s $1 -j ACCEPT"
+  iptables_rules_cmd[((i++))]="iptables -A INPUT -p icmp --icmp-type 8 -s $1 -d $1 -m state --state NEW,ESTABLISHED,RELATED -j ACCEPT"
+  iptables_rules_cmd[((i++))]="iptables -A OUTPUT -p icmp --icmp-type 0 -s $1 -d $1 -m state --state ESTABLISHED,RELATED -j ACCEPT"
+
+  if [ "${PLATFORM}" = "Red Hat" ] || [ "${PLATFORM}" = "CentOS" ]; then
+    if [ "${KERNEL_RELEASE}" = "el6" ];  then
+      iptables_rules_cmd[((i++))]="$SUDOCMD service iptables save"
+    fi
+  fi
+
+  runcommand "${iptables_rules_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to run iptables_rule_setup. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to run iptables_rule_setup. Fix errors and re-run again." >> ${CASPIDA_OUT}
+  fi
+
+  if [ "${PLATFORM}" = "Ubuntu" ]; then
+    $SUDOCMD iptables-save > /opt/caspida/conf/deployment/iptables.rules
+  fi
+}
+
+firewalld_rules_setup () {
+  i=0
+  unset firewalld_rules_cmd
+  firewalld_rules_cmd[((i++))]='systemctl enable firewalld'
+  firewalld_rules_cmd[((i++))]='systemctl start firewalld'
+  firewalld_rules_cmd[((i++))]='firewall-cmd --permanent --zone=public --add-service=ssh'
+  firewalld_rules_cmd[((i++))]='firewall-cmd --permanent --zone=public --add-service=https'
+  firewalld_rules_cmd[((i++))]='firewall-cmd --permanent --zone=public --add-port=10000-20000/tcp'
+  firewalld_rules_cmd[((i++))]='firewall-cmd --permanent --zone=public --add-port=9093/tcp'
+  for ip in `echo $1 | tr ',' '\n'`
+  do
+     firewalld_rules_cmd[((i++))]="firewall-cmd --permanent --zone=trusted --add-source=$ip"
+  done
+
+  # custom UI port if configured
+  local uiPort=$(readProperty ui.httpsPort)
+  if [[ -n "${uiPort}" ]]; then
+    firewalld_rules_cmd[((i++))]="firewall-cmd --permanent --zone=public --add-port=${uiPort}/tcp"
+  fi
+
+  firewalld_rules_cmd[((i++))]='firewall-cmd --permanent --zone=trusted --add-interface=flannel.1'
+  # From Docker 20.10, docker creates a separate zone "docker" and add docker0 interface to it. If docker0 interface was already attached to any other zone, then docker will fail to start
+  #firewalld_rules_cmd[((i++))]='firewall-cmd --permanent --zone=trusted --add-interface=docker0'
+  firewalld_rules_cmd[((i++))]='firewall-cmd --permanent --zone=trusted --add-interface=cni0'
+  # Removing docker rules, as these rules are added by docker itself
+  #firewalld_rules_cmd[((i++))]='firewall-cmd --direct --permanent --add-rule ipv4 filter INPUT 3 -i docker0 -j ACCEPT'
+  firewalld_rules_cmd[((i++))]='firewall-cmd --direct --permanent --add-rule ipv4 filter INPUT 3 -i cni0 -j ACCEPT'
+
+  firewalld_rules_cmd[((i++))]='firewall-cmd --permanent --zone=trusted --add-interface=lo'
+  firewalld_rules_cmd[((i++))]='firewall-cmd --reload'
+  runcommand "${firewalld_rules_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to run firewalld_rules_setup. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to run firewalld_rules_setup. Fix errors and re-run again." >> ${CASPIDA_OUT}
+  fi
+}
+
+ufw_rules_setup () {
+  i=0
+  unset ufw_rules_cmd
+
+  ufw_rules_cmd[((i++))]='ufw --force reset'
+  ufw_rules_cmd[((i++))]='ufw default deny incoming'
+  ufw_rules_cmd[((i++))]='ufw default allow outgoing'
+  ufw_rules_cmd[((i++))]='ufw allow ssh'
+  ufw_rules_cmd[((i++))]='ufw allow https'
+  ufw_rules_cmd[((i++))]='ufw allow 10000:20000/tcp'
+  ufw_rules_cmd[((i++))]='ufw allow 9093/tcp'
+  for ip in `echo $1 | tr ',' '\n'`
+  do
+     ufw_rules_cmd[((i++))]="ufw allow from $ip"
+     echo "ufw allow from $ip"
+  done
+
+  # custom UI port if configured
+  local uiPort=$(readProperty ui.httpsPort)
+  if [[ -n "${uiPort}" ]]; then
+    ufw_rules_cmd[((i++))]="ufw allow ${uiPort}/tcp"
+  fi
+
+  ufw_rules_cmd[((i++))]='ufw allow in on docker0'
+  ufw_rules_cmd[((i++))]='ufw allow in on cni0'
+  ufw_rules_cmd[((i++))]='ufw allow in on flannel.1'
+
+  ufw_rules_cmd[((i++))]='ufw allow in on lo'
+  runcommand "${ufw_rules_cmd[@]}"
+  if [[ $? -ne 0 ]]; then
+    echo "$(date): [ERROR] Failed to run ufw_rules_setup. Fix errors and re-run again."
+    echo "$(date): [ERROR] Failed to run ufw_rules_setup. Fix errors and re-run again." >> ${CASPIDA_OUT}
+  fi
+
+  # Allow forward from containers
+  beforeRules=/etc/ufw/before.rules
+  line1="# allow forward from containers"
+  line2="-A ufw-before-forward -s ${PodNetworkCidr} -j ACCEPT"
+  pattern="line or these rules"
+
+  # Add container forward rule before the line matching pattern,
+  # if the forward rule is not present
+  ${SUDOCMD} grep -q -- "${line2}" ${beforeRules} ||
+    ${SUDOCMD} sed -ie "/${pattern}/i\\${line1}\n${line2}\n" ${beforeRules}
+}
+
+create_uba_site_prop_template() {
+  # create the local conf dirs
+  create_caspida_local_dirs
+
+  # copy configuration templates to ${CASPIDA_LOCAL_CONF_DIR}
+  #  cp -n .. doesn't overwrite existing files
+  echo "$(date): copying templates to ${CASPIDA_LOCAL_CONF_DIR}, will not overwrite existing files"
+  cp -Rnv ${CASPIDA_DEPLOYMENT_CONF_DIR}/templates/local_conf/* ${CASPIDA_LOCAL_CONF_DIR}
+}
+
+caspida_setup () {
+   noformat=$1
+
+   echo "caspida.cluster.nodes: $caspidaclusternodes"
+   echo "zookeeper.servers    : $zookeepernodelist"
+   echo "hadoop.namenode.host : $namenode"
+   echo "database.host        : $postgresnode"
+   if [ $PostgresStandbyEnabled = "true" ]; then
+     echo "database.standby     : $postgresstandby"
+   fi
+   echo "impala.server.host   : $impalanode"
+   echo "impala.catalog.host  : $impalacatalognode"
+   echo "impala.statestore.host  : $impalastatestorenode"
+
+   echo "Do you want to continue"
+   echo -n "(Yy/Nn) : "
+   if [[ ! -z ${prompt_response} ]]; then
+     x=${prompt_response}
+   else
+     read x
+   fi
+
+   if [[ "$x" =~ [yY] ]]; then
+     echo ""
+   else
+     echo "Multinode Setup Cancelled as per user request"
+     exit 0
+   fi
+
+   # Compute zookeeperquorum and zoonodes for zoo.cfg
+   if [ "$zookeepernodelist" != "" ]; then
+     index=0
+     zookeeperquorum=""
+     for i in `echo $zookeepernodelist | tr ',' '\n'`
+     do
+       zookeepernode=`echo $i | cut -d":" -f2`
+       zookeeperquorum=$zookeeperquorum$zookeepernode,
+       zoonode[((index++))]=$zookeepernode
+     done
+
+     zookeeperquorum=`echo $zookeeperquorum | sed s'/,$//'`
+
+     echo
+     echo "zoonodes        : ${zoonode[@]}"
+     echo "zookeeperquorum : $zookeeperquorum"
+     echo "................................................................................."
+
+     nodeid=0
+     for i in `echo $zookeepernodelist | tr ',' '\n'`
+     do
+       zookeepernode=`echo $i | cut -d":" -f2`
+       ((nodeid++))
+       echo "$zookeepernode => zookeeper $nodeid"
+       ssh $zookeepernode "( ${CASPIDA_BIN_DIR}/Caspida \
+       zookeeper_setup $nodeid ${zoonode[@]} )"
+       if [[ $? -ne 0 ]]; then
+         echo "Error in running ${CASPIDA_BIN_DIR}/Caspida zookeeper_setup on ${node}. \
+         Fix errors and re-run again."
+         echo "Error in running ${CASPIDA_BIN_DIR}/Caspida zookeeper_setup on ${node}. \
+         Fix errors and re-run again." >> ${CASPIDA_OUT}
+         return 1
+       fi
+       echo "................................................................................."
+     done
+   fi
+
+   if [ "$caspidaclusternodes" != "" ]; then
+     for node in `echo $caspidaclusternodes | tr ',' '\n'`
+     do
+       #
+       # Setup Caspida directory permissions for multinode
+       #
+       echo "$node"
+       ssh $node "( ${CASPIDA_BIN_DIR}/Caspida setupcaspidadirs )"
+       if [[ $? -ne 0 ]]; then
+         echo "Error in running ${CASPIDA_BIN_DIR}/Caspida setupcaspidadirs on ${node}. \
+         Fix errors and re-run again."
+         echo "Error in running ${CASPIDA_BIN_DIR}/Caspida setupcaspidadirs on ${node}. \
+         Fix errors and re-run again." >> ${CASPIDA_OUT}
+         return 1
+       fi
+       echo ".............................."
+
+       #
+       # Setup hadoop permissions on all the nodes, prepare namenode format
+       # on namenode
+       #
+       if [ "$namenode" != "" ] &&
+          [ "$namenode" = "$node" ]; then
+         echo "$namenode"
+         ssh $namenode "( ${CASPIDA_BIN_DIR}/Caspida setuphadoop )"
+         if [[ $? -ne 0 ]]; then
+           echo "Error in running ${CASPIDA_BIN_DIR}/Caspida setuphadoop on ${namenode}. \
+                 Fix errors and re-run again."
+           echo "Error in running ${CASPIDA_BIN_DIR}/Caspida setuphadoop on ${namenode}. \
+                 Fix errors and re-run again." >> ${CASPIDA_OUT}
+           return 1
+         fi
+         echo
+       else
+         if [ "$node" != "" ] &&
+            [ "$namenode" != "" ] &&
+            [ "$node" != "$namenode" ]; then
+           echo "$node"
+           ssh $node "( ${CASPIDA_BIN_DIR}/Caspida setuphadoopcommon )"
+           if [[ $? -ne 0 ]]; then
+             echo "Error in running ${CASPIDA_BIN_DIR}/Caspida setuphadoopcommon on ${namenode}. \
+                   Fix errors and re-run again."
+             echo "Error in running ${CASPIDA_BIN_DIR}/Caspida setuphadoopcommon on ${namenode}. \
+                   Fix errors and re-run again." >> ${CASPIDA_OUT}
+             return 1
+           fi
+        fi
+       fi
+
+       #
+       # Setup Spark permissions on all nodes
+       #
+       echo "$node"
+       ssh $node "( ${CASPIDA_BIN_DIR}/Caspida setupspark )"
+       if [[ $? -ne 0 ]]; then
+         echo "Error in running ${CASPIDA_BIN_DIR}/Caspida setupspark on ${node}. \
+               Fix errors and re-run again."
+         echo "Error in running ${CASPIDA_BIN_DIR}/Caspida setupspark on ${node}. \
+               Fix errors and re-run again." >> ${CASPIDA_OUT}
+         return 1
+       fi
+       echo -n ".........................................."
+       echo ".........................................."
+
+       #
+       # Setup postgres permissions on all nodes
+       #
+       echo $node
+       ssh $node "( ${CASPIDA_BIN_DIR}/Caspida setuppostgres )"
+       if [[ $? -ne 0 ]]; then
+         echo "Error in running ${CASPIDA_BIN_DIR}/Caspida setuppostgres on ${node}. \
+               Fix errors and re-run again."
+         echo "Error in running ${CASPIDA_BIN_DIR}/Caspida setuppostgres on ${node}. \
+               Fix errors and re-run again." >> ${CASPIDA_OUT}
+         return 1
+       fi
+       echo -n "............................................"
+       echo "................................................."
+     done
+   fi
+
+   caspida_cert $MYIP
+   if [[ $? -ne 0 ]]; then
+     echo "Error in running caspida_cert. Fix errors and re-run again."
+     echo "Error in running caspida_cert. Fix errors and re-run again." >> ${CASPIDA_OUT}
+     return 1
+   fi
+
+   #Licensing is Disabled till 2.2.0 Uncomment the following to enable
+   install_splunk_cluster
+
+   # run the post installer for the installed content
+   subscription_content_postinstall >> ${OUTFILE} 2>&1 # add-content-info
+   if [[ $? -ne 0 ]]; then
+     echo "Error in running subscription_content_postinstall. Fix errors and re-run again."
+     echo "Error in running subscription_content_postinstall. Fix errors and re-run again." >> ${CASPIDA_OUT}
+     return 1
+   fi
+}
+
+caspida_status() {
+  # check status of all the scripts ...
+  status=0
+  for script in 'caspida-jobmanager' 'caspida-ui'
+  do
+    echo "checking status of: $script"
+    service $script status
+    rv=$?
+    if [ $rv -ne 0 ]; then
+      echo "$script status: return value: $rv"
+      status=1
+      break
+    fi
+  done
+  return $status
+}
+
+#disable the systemd services listed below so that they dont start upon reboot
+disable_systemd_services() {
+  SSHCMD="ssh"
+
+  service_arr=(kubelet.service docker.service influxdb.service)
+  for node in ${caspidaclusternodes//,/ }
+  do
+    for svc in "${service_arr[@]}"
+    do
+      ${SSHCMD} ${node} ${SUDOCMD} systemctl disable $svc >> ${CASPIDA_OUT} 2>&1
+      ${SSHCMD} ${node} ${SUDOCMD} systemctl stop $svc >> ${CASPIDA_OUT} 2>&1
+    done
+
+    # Added Remove command to ensure influxdb.service exists only in /usr/lib/systemd/system/
+    # or /lib/systemd/system (for Ubuntu) directory
+    ${SSHCMD} ${node} ${SUDOCMD} "rm -f /etc/systemd/system/influxd*.service >> ${CASPIDA_OUT} 2>&1"
+  done
+
+}
+
+# This function starts/stops all services required for Caspida
+startstopAllServices() {
+  local cmdOption="$1"
+  local isSetup="$2"
+  if [ "${isSetup}" != "setup" ]; then
+    isSetup="nosetup"
+  fi
+
+  # Stop non services first
+  # echo "Storm on Yarn : ${IsStormOnYarn}"
+  [ "$cmdOption" = "stop" ] &&
+  if [ "${IsStormOnYarn}" = "true" ]; then
+    # launch storm Application on Yarn
+    ${CASPIDA_BIN_DIR}/storm-on-yarn.sh shutdown
+  fi
+
+  # Start Base services first
+  if [ "$cmdOption" = "start" ]; then
+    update_system_settings ${caspidaclusternodes}
+    startstopBaseServices $cmdOption $deploymentConfFile
+  fi
+
+  noderoles=`cat $deploymentConfFile | grep -v "^#" | grep "^[a-z].*"`
+  # Start/Stop rest of the services based on cmdOption
+  for i in $noderoles
+  do
+    servicename=""
+    noderole=`echo $i | awk -F '=' '{ print $1 }'`
+    servers=`echo $i | awk -F '=' '{ print $2 }' | tr ',' '\n'`
+
+    case "$noderole" in
+      hadoop.snamenode.host)
+        servicename="hadoop-hdfs-secondarynamenode"
+        ;;
+      hbase.master.host)
+        servicename="hbase-master"
+        ;;
+      hbase.regionserver.host)
+        servicename="hbase-regionserver"
+        ;;
+      persistence.datastore.tsdb)
+        servicename="influxdb"
+        ;;
+      database.host)
+        servicename=${POSTGRES_SERVICE}
+        ;;
+      database.standby)
+        if [ $PostgresStandbyEnabled = "true" ]; then
+          servicename=${POSTGRES_SERVICE}
+        fi
+        ;;
+      persistence.redis.server)
+        servicename="redis-server"
+        ;;
+      persistence.redis.irserver)
+        servicename="redis-ir-server"
+        ;;
+      spark.master)
+        # spark services handled in caspida_stop/start
+        # echo "spark.master is delegated to Caspida: $cmdOption"
+        servicename=""
+        ;;
+      spark.history)
+        # spark services handled in caspida_stop/start
+        # echo "spark.history is delegated to Caspida: $cmdOption"
+        servicename=""
+        ;;
+      hive.host)
+        servicename="hive-metastore"
+        ;;
+      impala.statestore.host)
+        servicename=""
+        ;;
+      impala.catalog.host)
+        servicename=""
+        ;;
+      impala.server.host)
+        servicename=""
+        ;;
+      storm.nimbus.host)
+        servicename="storm-nimbus"
+        ;;
+      storm.supervisor.host)
+        servicename="storm-supervisor"
+        ;;
+      storm.ui.host)
+        servicename="storm-ui"
+        ;;
+    esac
+
+    unset nodeArr
+    declare -A nodeArr # associative array
+
+    [ "$servicename" != "" ] &&
+    for server in `echo $servers | tr ',' '\n'`
+    do
+      server=`echo $server | awk -F ":" '{ print $1 }'`
+      if [ "$server" = "localhost" ]; then
+        [ "${cmdOption}" = "start" ] &&
+        [ "${isSetup}" = "setup" ] &&
+        [ "${servicename}" = "hive-metastore" ] &&
+          /opt/caspida/bin/create_hivemetastore -d
+        if [  -z "${servicename##*storm*}"  ]; then
+          if [ "${IsContainerDeployment}" = "false" ]; then
+            [ "$cmdOption" = "stop" ] && stop_service $servicename
+            [ "$cmdOption" = "start" ] && start_service $servicename
+          fi
+        else
+          [ "$cmdOption" = "stop" ] && stop_service $servicename
+          [ "$cmdOption" = "start" ] && start_service $servicename
+        fi
+      else
+        # Caspida command knows start-service which maps to start_service
+        # Caspida command knows stop-service which maps to stop_service
+        cmd="start-service"
+        [ "$cmdOption" = "stop" ] && cmd="stop-service"
+        echo $server
+        if [  -z "${servicename##*storm*}"  ]; then
+          if [ "${IsContainerDeployment}" = "false" ]; then
+            ssh $server "(
+              [ "${cmdOption}" = "start" ]  &&
+              [ "${isSetup}" = "setup" ] &&
+              [ "${servicename}" = "hive-metastore" ] &&  /opt/caspida/bin/create_hivemetastore -d
+
+              ${CASPIDA_BIN_DIR}/Caspida $cmd $servicename
+            )"
+          fi
+        else
+          ssh $server "(
+            [ "${cmdOption}" = "start" ]  &&
+            [ "${isSetup}" = "setup" ] &&
+            [ "${servicename}" = "hive-metastore" ] &&  /opt/caspida/bin/create_hivemetastore -d
+
+            ${CASPIDA_BIN_DIR}/Caspida $cmd $servicename
+          )" &
+          pid="$!"
+          nodeArr[$pid]="$cmd $servicename on $server"
+        fi
+      fi
+
+      if [ "${servicename}" = "hive-metastore" ] && [ "${cmdOption}" = "start" ]; then
+        # wait for pids
+        for pid in ${!nodeArr[@]}; do # keys
+          echo "$(date): Waiting for: ${nodeArr[$pid]}: $pid" >> ${CASPIDA_OUT}
+          wait ${pid}
+          status=$?
+          ret+=${status}
+          if [[ ${status} -ne 0 ]]; then
+            write_message "failed to: ${nodeArr[$pid]}"
+          fi
+        done
+        unset nodeArr # remove it so we dont wait again outside the loop..
+
+        for i in {1..10};
+        do
+          # run in a subshell in /tmp, sudo -u postgres will complain about permissions if executed from caspida home
+          # use postgres user since caspida user hasn't been setup yet
+          cd /tmp; timeout 30s $SUDOCMD -u postgres psql -d metastore -c "select 1" > /dev/null 2>&1
+          if [ $? -eq 0 ]; then
+            echo "Hive tables are accessible"
+            break
+          else
+            echo "Trying hive connectivity retry count [$i] - retrying.."
+          fi
+        done
+
+        # check for live datanodes
+        status=1
+        echo "Looking for live HDFS datanodes"
+        echo "$(date): Looking for live HDFS datanodes" >> ${CASPIDA_OUT}
+
+        for i in {1..20};
+        do
+          cmd="-u hdfs hdfs dfsadmin -report -live"
+          report_cmd=`form_sudo_cmd "${cmd}"`
+          report=`$report_cmd`
+
+          if [ $? -ne 0  ]; then
+            echo "No live hdfs datanodes found: retry count [$i] - retrying.."
+            continue
+          fi
+          echo "$(date): cmd=$report_cmd output=$report" >> ${CASPIDA_OUT}
+
+          # run the command & look for name or hostname
+          echo "$report" | egrep -i "name|hostname" >> ${CASPIDA_OUT} 2>&1
+          status=$?
+          if [ $status -eq 0 ]; then
+             break
+          fi
+        done
+
+        if [ $status -eq 0 ]; then
+          echo "found HDFS live datanodes"
+          break
+        else
+          echo "No HDFS datanodes found, check if the required ports are open"
+          echo "Refer to installation instructions for the list of ports that are required to be open between the caspida cluster nodes"
+          exit 3
+        fi
+      fi # "hive-metastore" &&  "${cmdOption}" = "start"
+    done
+
+    # wait for pids
+    for pid in ${!nodeArr[@]}; do # keys
+      echo "$(date): Waiting for: ${nodeArr[$pid]}: $pid" >> ${CASPIDA_OUT}
+      wait ${pid}
+      status=$?
+      ret+=${status}
+      if [[ ${status} -ne 0 ]]; then
+        write_message "failed to: ${nodeArr[$pid]}"
+      fi
+    done
+  done
+
+  # start impala container services, skip during caspida setup, during setup it will be called after setup_contanerization
+  [ "$cmdOption" = "start" ] && [ "${isSetup}" = "nosetup" ] && start_impala
+
+  # Stop impala container services
+  [ "$cmdOption" = "stop" ] && stop_impala
+
+  # Stop the Base services at the end
+  [ "$cmdOption" = "stop" ] && startstopBaseServices $cmdOption $deploymentConfFile
+
+  # Start non services at the end
+  [ "$cmdOption" = "start" ] &&
+  if [ "${IsStormOnYarn}" = "true" ]; then
+    # launch storm Application on Yarn
+    ${CASPIDA_BIN_DIR}/storm-on-yarn.sh launch
+  fi
+
+  # start/stop container services
+  local stopStartContSvcs="false"
+  if [[ "$cmdOption" == "stop" ]]; then
+    # always call through for stop
+    stopStartContSvcs="true"
+  else
+    # start: if setting up, dont start containers yet
+    if [[ "${isSetup}" == "setup" ]]; then
+      stopStartContSvcs="false"
+    else
+      stopStartContSvcs="true"
+    fi
+  fi
+
+  if [[ "${stopStartContSvcs}" == "true" ]]; then
+    stop_start_container_services "$cmdOption"
+  fi
+
+  # clean and setup redis cluster
+  # cleanup is required if running setup on a
+  # system that already has data in redis.
+  # setup needs to happen with clean redis nodes
+  if [[ "${isSetup}" == "setup" ]]; then
+    clean_setup_redis
+  fi
+}
+
+# only starts/stops firewall on the leader node: setup-containerization
+#  fails when firewall is running..
+# returns 0 if f/w was running before stop
+stop_start_firewall() {
+  action=$1
+  fw_service=""
+  if [ "${PLATFORM}" = "Red Hat" ] || [ "${PLATFORM}" = "CentOS" ]; then
+    fw_service="firewalld"
+  elif [ "${PLATFORM}" = "Ubuntu" ]; then
+    fw_service="ufw"
+  else
+    write_message "$(date): unsupported ${PLATFORM}"
+    return 1
+  fi
+
+  # return the status of the firewall before doing a stop, this way we can
+  # start it back up if it was running,
+  wasRunning=1
+  if [[ "${action}" == "stop" ]]; then
+    $SUDOCMD service ${fw_service} status > /dev/null 2>&1
+    wasRunning=$?
+  fi
+
+  echo "$(date): ${action} firewall" >> ${CASPIDA_OUT}
+  $SUDOCMD service ${fw_service} ${action}
+  return ${wasRunning} # used only whe stopping
+}
+
+disable_firewall() {
+  node=$1
+  echo "$node: In disable_firewall" >> ${CASPIDA_OUT} 2>&1
+
+  fw_service=""
+  if [ "${PLATFORM}" = "Red Hat" ] || [ "${PLATFORM}" = "CentOS" ]; then
+    if [ "${KERNEL_RELEASE}" = "el7" ] || [ "${KERNEL_RELEASE}" = "el8" ];  then
+        fw_service="firewalld"
+    fi
+  elif [ "${PLATFORM}" = "Ubuntu" ]; then
+      fw_service="ufw"
+  fi
+
+  if [[ "${node}" != "localhost" ]]; then
+    [ "$fw_service" = "ufw" ] && ssh $node $SUDOCMD ${fw_service} --force disable >> ${CASPIDA_OUT} 2>&1
+    ssh $node $SUDOCMD service ${fw_service} stop >> ${CASPIDA_OUT} 2>&1
+    ssh $node $SUDOCMD systemctl disable ${fw_service} >> ${CASPIDA_OUT} 2>&1
+  else
+    [ "$fw_service" = "ufw" ] && $SUDOCMD ${fw_service} --force disable >> ${CASPIDA_OUT} 2>&1
+    $SUDOCMD service ${fw_service} stop >> ${CASPIDA_OUT} 2>&1
+    $SUDOCMD systemctl disable ${fw_service} >> ${CASPIDA_OUT} 2>&1
+  fi
+}
+
+disable_firewall_cluster() {
+  echo "In disable_firewall_cluster" >> ${CASPIDA_OUT} 2>&1
+
+  # ${caspidaclusternodes} is comma separated, replace it with a space for the for loop
+  caspidaclusternodes_lc=${caspidaclusternodes,,} #to-lower
+  for node in ${caspidaclusternodes_lc//,/ }
+  do
+    echo "$(date): ContainerDeployment: disabling firewall on: ${node}" >> ${CASPIDA_OUT}
+    disable_firewall "${node}"
+  done
+}
+
+enable_firewall_cluster() {
+  OUTFILE=${CASPIDA_OUT}
+  echo "In enable_firewall_cluster" >> ${OUTFILE} 2>&1
+
+  fw_service=""
+  if [ "${PLATFORM}" = "Red Hat" ] || [ "${PLATFORM}" = "CentOS" ]; then
+    if [ "${KERNEL_RELEASE}" = "el7" ] || [ "${KERNEL_RELEASE}" = "el8" ];  then
+        fw_service="firewalld"
+    fi
+  elif [ "${PLATFORM}" = "Ubuntu" ]; then
+      fw_service="ufw"
+  fi
+
+  # ${caspidaclusternodes} is comma separated, replace it with a space for the for loop
+  caspidaclusternodes_lc=${caspidaclusternodes,,} #to-lower
+  for node in ${caspidaclusternodes_lc//,/ }
+  do
+    echo "$(date): ContainerDeployment: enabling firewall on: ${node}" >> ${CASPIDA_OUT}
+    if [ "${node}" != "localhost" ]; then
+      [ "$fw_service" = "ufw" ] && ssh $node $SUDOCMD ${fw_service} --force enable >> ${OUTFILE} 2>&1
+      ssh $node $SUDOCMD systemctl enable ${fw_service} >> ${OUTFILE} 2>&1
+      ssh $node $SUDOCMD service ${fw_service} start >> ${OUTFILE} 2>&1
+    else
+      [ "$fw_service" = "ufw" ] && $SUDOCMD ${fw_service} --force enable >> ${OUTFILE} 2>&1
+      $SUDOCMD ${fw_service} reload >> ${OUTFILE} 2>&1
+      $SUDOCMD systemctl enable ${fw_service} >> ${OUTFILE} 2>&1
+      $SUDOCMD service ${fw_service} start >> ${OUTFILE} 2>&1
+    fi
+  done
+}
+
+sync_cluster() {
+  SyncOnly="$1"
+  UseSudo="$2"
+  echo "syncing caspida bits/conf across all caspida cluster nodes: $caspidaclusternodes"
+  thisHost=`hostname -s`
+  thisHost=${thisHost,,}  # to-lower
+  thisHostFQDN=`hostname -f`
+  thisHostFQDN=${thisHostFQDN,,}  # to-lower
+
+  if [ ! -z ${UseSudo} ] && [ "${UseSudo}" != "--rsyncsudo" ]; then
+    echo "Invalid option ${UseSudo} expected --rsyncsudo"
+    exit 2
+  fi
+
+  if [ ! -z ${SyncOnly} ]; then
+    # allow only absolute path specifications. [starts with slash]
+    if [[ ${SyncOnly} != /* ]]; then
+      echo "Unsupported path: ${SyncOnly}, only absoulute paths can be specified"
+      exit 2
+    fi
+
+    if [[ ${SyncOnly} == */./* ]]; then
+      # ./ changes the implied dirs in rsync
+      echo "Unsupported path: ${SyncOnly}, "/./" has special internal semantics"
+      exit 2
+    fi
+  fi
+
+  caspidaclusternodes_lc=${caspidaclusternodes,,} #to-lower
+  for node in ${caspidaclusternodes_lc//,/ } # comma separated: replace it with a space for the for loop
+  do
+    if [[ "$node" = "${thisHost}" || "$node" = "${thisHostFQDN}" || "$node" = "${MYIP}" ||
+          "$node" = "localhost" || "$node" = 127.* ]]; then
+      echo "  skipping host: $node (this-host=${thisHostFQDN}/${thisHost}/${MYIP})"
+      continue
+    fi
+
+    echo "syncing to: ${node}: ${SyncOnly}"
+    if [ ! -z ${SyncOnly} ]; then
+      do_sync ${SyncOnly}/./ ${node}:${SyncOnly} ${UseSudo}
+      if [ $? -ne 0 ]; then
+        exit 2
+      fi
+
+      continue
+    fi
+
+    do_sync /opt/caspida/./ ${node}:/opt/caspida
+    if [ $? -ne 0 ]; then
+      exit 2
+    fi
+
+    # /etc/caspida/local also contains node/ directory for node specific
+    # configuration ex: eth interface. make sure we dont sync that
+    LocalConf=/etc/caspida/local/conf
+    if [ -d ${LocalConf} ]; then
+      do_sync ${LocalConf}/./ ${node}:${LocalConf}
+      if [ $? -ne 0 ]; then
+        exit 2
+      fi
+    fi
+
+  done
+  return 0
+}
+
+stop_all_java_procs() {
+  thisHost=`hostname -s`
+  thisHostFQDN=`hostname -f`
+
+  # ${caspidaclusternodes} is comma separated, replace it with a space for the for loop
+  for node in ${caspidaclusternodes//,/ }
+  do
+    echo "stopping java processes on: ${node}"
+    if [[ "$node" = "${thisHost}" || "$node" = "${thisHostFQDN}" || "$node" = "${MYIP}" ||
+          "$node" = "localhost" || "$node" = "127.0.0.1" ]]; then
+      $SUDOCMD pkill java
+    else
+      ssh $node $SUDOCMD pkill java
+    fi
+  done
+}
+
+# wth DNS working now, this is not required amy more..
+do_containerization_replace_properties() {
+  if [[ ! -f ${deploymentConfFileIPS} || ! -f ${UbaRemainingSvcsConf} ||
+          ${deploymentConfFileIPS} -ot ${deploymentConfFile} ]]; then
+    # recreate the ips file if it doesn't exist or if its older than
+    # the ${deploymentConfFile}
+    # performContainerizationDeploymentConfiguration
+    echo
+  fi
+
+  containerization_replace_properties
+  status=$?
+  return ${status}
+}
+
+# Called during setup: works with AMIs where the blocked ports have a DROP packet instead of DENY
+CheckIfPortsOpen() {
+  RedisHost=`grep "persistence.redis.server" $CASPIDA_PROPERTIES | awk -F "=" '{ print $2 }'`
+  RedisPort=6379
+
+  # run with a timeout of 30s, timeout will return 124 when the command is timed-out
+  # any other return value is fine
+  for redisnode in $(echo $RedisHost | sed "s/,/ /g")
+  do
+
+    echo "checking if required network ports are open on $redisnode"
+    echo "$(date): checking if required network ports are open" >> ${CASPIDA_OUT}
+
+    timeout 30s redis-cli -h ${redisnode} -p ${RedisPort} ${RedisAuthCmd} PING >> ${CASPIDA_OUT} 2>&1
+    status=$?
+
+    echo "$(date): redis-cli with timeout cmd: exit status=$status" >> ${CASPIDA_OUT}
+    rv=0
+    if [ $status -eq 124 ]; then
+      echo "  network ports probably not open (connectivity check timedout)"
+      rv=1
+      break
+    fi
+  done
+
+  return $rv
+}
+
+# assert MYIP is not empty: exits if the check fails
+AssertMYIPNotEmpty() {
+  setup="$1"
+  if [[ -z ${MYIP} ]]; then
+    echo
+    echo "failed to get IP address of interface: $(getinterface), aborting"
+    echo " if this is not the interface you specified at setup, check if you"
+    echo "  have specifed it in: /etc/caspida/local/conf/uba-site.properties"
+    echo "   and change it to the one reported by 'ip -f inet addr' for your IP"
+
+    if [[ "${IsContainerDeployment}" == "true" && "${setup}" != "true" ]]; then
+      echo
+      echo "if the IP address has changed (since the previous run), you also have to run"
+      echo "   Caspida sync-cluster"
+    fi
+
+    echo
+    exit 5
+  fi
+}
+
+# sets up firewall on all nodes in the cluster
+setup_firewall_cluster() {
+  interface=`getinterface`
+
+  checkSSHConnectivity
+  local nodes=$caspidaclusternodes
+  if [[ -n $caspidaclusterreplicationnodes ]]; then
+    echo "Identified UBA replication nodes."
+    echo "Note: this should be run on both clusters for replication setup."
+    nodes+=,$caspidaclusterreplicationnodes
+  fi
+
+  caspidaclusterips="" # Should include replication cluster if configured
+  HOSTIP=${MYIP}
+  # ${nodes} is comma separated, replace it with a space for the for loop
+  caspidaclusternodes_lc=${nodes,,} #to-lower
+  for nodename in ${caspidaclusternodes_lc//,/ }
+  do
+    is_ip_address ${nodename}
+    isIP=$?
+
+    if [[ "${nodename}" = "localhost" || "${nodename}" = 127.* ]]; then
+      #nodeipaddress=${HOSTIP} # dont use localhost/127.x.x.x: use the hostip
+      echo "localhost/127.x.x.x not supported for nodes, aborting"
+      return 2
+    elif [[ ${isIP} -eq 0 ]]; then
+      nodeipaddress=${nodename} # its an IP address: dont have to change it
+    else
+      nodeipaddress=`getent ahostsv4 $nodename | grep -i $nodename | awk '{ print $1 }'`
+      if [[ -z ${nodeipaddress} ]]; then
+        echo " could not get ip address for ${nodename}, using: getent ahostsv4 $nodename | grep -i $nodename"
+        echo "  check if /etc/hosts or the DNS is resolving $nodename to a 127.x.x.x address"
+        return 3
+      fi
+    fi
+
+    if [[ "${nodeipaddress}" == 127.* ]]; then
+      echo "$nodename resolves to 127.x.x.x address (${nodeipaddress}), which will not work with containers, aborting"
+      return 2
+    fi
+
+    caspidaclusterips+="$nodeipaddress,"
+  done
+
+  msg="Setting up firewall on: $caspidaclusterips"
+  echo $msg
+  echo "$(date): $msg" >> ${CASPIDA_OUT}
+
+  # Only setup this cluster (excluding replication cluster)
+  for node in ${caspidaclusternodes//,/ }
+  do
+    if [[ "$node" = "localhost" || "$node" = 127.*  ]]; then
+      echo "Installing Firewall: interface = $interface and ip = $MYIP"
+      ${CASPIDA_BIN_DIR}/Caspida setupfirewall $MYIP
+    else
+      echo "Installing Firewall: interface = $interface and node = $node"
+      # Added all IPs (including IPs of replication cluster if configured)
+      ssh $node "( ${CASPIDA_BIN_DIR}/Caspida setupfirewall $caspidaclusterips)"
+    fi
+  done
+  return 0
+}
+
+create_uba_site_prop_template_cluster() {
+  set_numnodes_in_cluster
+
+  for node in ${caspidaclusternodes//,/ }  # Only setup this cluster (excluding replication cluster)
+  do
+    if [[ "$node" = "localhost" || "$node" = 127.*  ]]; then
+      echo "creating local configuration templates"
+      create_uba_site_prop_template
+    else
+      echo "creating local configuration templates"
+      ssh $node "( ${CASPIDA_BIN_DIR}/Caspida create-uba-site)"
+    fi
+  done
+  return 0
+}
+
+# Pass in "xl" as an argument to change a 20 node configuration to a 20xl node configuration
+tune_configuration_cluster() {
+  opt_sizing=${1:-""}
+  xl_required_numnodes=20
+  set_numnodes_in_cluster
+
+  # Only allow expanded sizing configuration for a 20 node deployment
+  if [ -n "$opt_sizing" ] && [ $numnodes -ne $xl_required_numnodes ]; then
+    echo "Expanded sizing configuration not available for a $numnodes node deployment, a $required_numnodes node deployment is required"
+    exit 1
+  fi
+
+  for node in ${caspidaclusternodes//,/ }
+  do
+    if [[ "$node" = "localhost" || "$node" = 127.*  ]]; then
+      echo "Tuning $node for a ${numnodes}${opt_sizing} node deployment"
+      tune_configuration "$opt_sizing"
+    else
+      echo "Tuning $node for a ${numnodes}${opt_sizing} node deployment"
+      ssh $node "( ${CASPIDA_BIN_DIR}/Caspida tune-configuration "${opt_sizing}")"
+    fi
+  done
+}
+
+action_start () {
+  check_if_master_node
+  if [ $? -ne 0 ]; then
+    echo ${NotMasterErrMsg}
+    exit 1
+  fi
+
+  echo "Starting Caspida"
+
+  # service checks: will exit if service not running
+  echo | nc ${JOBMGRIP} 9002
+  status=$?
+  if [[ ${status} -eq 0 ]]; then
+    write_message " job manager appears to be already running on: ${JOBMGRIP}, aborting start"
+    exit 2
+  fi
+
+  check_required_services
+  status=$?
+  if [[ ${status} -ne 0 ]]; then
+    write_message " have you started all services with Caspida start-all ?"
+    exit 2
+  fi
+
+  # the install-subscription-content.py, start UI separately & calls "start --no-ui"
+  caspida_start "$1"
+}
+
+action_stop () {
+  check_if_master_node
+  if [ $? -ne 0 ]; then
+    echo ${NotMasterErrMsg}
+    exit 1
+  fi
+  echo "Stopping Caspida"
+  # the install-subscription-content.py, stops UI separately & calls "stop --no-ui"
+  caspida_stop "$1"
+}
+
+if [ "$#" -lt 1 ]; then
+    usage
+fi
+
+CaspidaUser=${CASPIDA_USER}
+if [[ "${CASPIDA_USER}" =~ [\<%\"] || -z "${CASPIDA_USER}" ]]; then
+  # uninitialized or not set
+  CaspidaUser="caspida"
+fi
+
+runningAs=`whoami`
+if [ "${runningAs}" != "${CaspidaUser}" ]; then
+  echo "running as: ${runningAs}"
+  echo "Caspida script needs to be run as ${CaspidaUser} user. Exiting"
+  exit 3;
+fi
+
+if [ ! -f ${CASPIDA_OUT} ]; then
+  $SUDOCMD mkdir -p /var/vcap/sys/log/caspida
+  $SUDOCMD touch ${CASPIDA_OUT}
+  $SUDOCMD chmod 666 ${CASPIDA_OUT}
+fi
+
+exitStatus=0
+echo "$(date): Running: $0 $@"
+echo "$(date): Running: $0 $@" >> ${CASPIDA_OUT}
+
+# since we only connect to localhost/cluster-nodes, make sure we dont try to go
+# through a proxy. Keep a backup of the vars. used by CaspidaFunctions::init_container_master
+orig_http_proxy=${http_proxy}
+orig_https_proxy=${https_proxy}
+orig_no_proxy=${no_proxy}
+unset https_proxy http_proxy
+
+action="${1,,}" # convert-to-lower-case
+case "$action" in
+  adddisk | add-disk)
+    echo "Adding Disk: $2" "$3" "$4"
+    caspida_add_disk "$2" "$3" "$4" # $4 : --skip-stop-all
+    exitStatus=$?
+    ;;
+  status)
+    caspida_status
+    exitStatus=$?
+    ;;
+  stop)
+    action_stop "$2"
+    exitStatus=0
+    ;;
+  start)
+    action_start "$2"
+    ;;
+  replace-properties)
+    # create the caspida-deployment-ips.conf: used by GenericFunctionLauncher
+    # do it here, so if IP address changes, we can do a Caspida replace-properties to fix it.
+    # performContainerizationDeploymentConfiguration
+
+    caspida_replace_properties "$2"
+    exitStatus=$?
+    ;;
+  containerization-replace-properties)
+    echo "deprecated: dont need to run containerization-replace-properties anymore"
+    #do_containerization_replace_properties
+    exitStatus=$?
+    ;;
+  setuphadoopdirs)
+    hadoop_setup dirs
+    exitStatus=$?
+    ;;
+  setuphadoop)
+    hadoop_setup
+    exitStatus=$?
+    ;;
+  setuphadoopcommon)
+    hadoop_common_setup
+    exitStatus=$?
+    ;;
+  setuppostgres)
+    postgres_tune_configuration
+    exitStatus=$?
+    ;;
+  setupspark)
+    spark_setup
+    exitStatus=$?
+    ;;
+  setupcaspidadirs)
+    caspida_dir_setup
+    exitStatus=$?
+    ;;
+  setup-containerization)
+    stop_start_firewall "stop" # setup-containerization kube-v1.13.1 fails when firewall is running
+    wasRunning=$?
+    echo "$(date): was firewall running=${wasRunning}" >> ${CASPIDA_OUT}
+    setup_containerization "$2" # --use-existing-config
+    exitStatus=$?
+    if [[ ${wasRunning} -eq 0 ]]; then
+      echo "$(date): restarting firewall" >> ${CASPIDA_OUT}
+      stop_start_firewall "start"
+    fi
+    ;;
+  containerization-add-worker)
+    containerization_add_worker $2 "false" # don't reset
+    ;;
+  containerization-reset-worker | containerization-remove-worker)
+    containerization_remove_worker $2
+    exitStatus=$?
+    ;;
+  check_ssh)
+    checkSSHConnectivity
+  ;;
+  start-cluster | start-containers)
+    specified_container_group="$2"
+    start_containers "${specified_container_group}"
+    exitStatus=$?
+    ;;
+  stop-cluster | stop-containers)
+    specified_container_group="$2"
+    stop_containers "false" "${specified_container_group}"
+    if [[ -z ${specified_container_group} ]]; then
+      stop_containers_wait # wait only when stopping all containers
+    fi
+    ;;
+  setuplicense)
+    install_splunk
+    ;;
+  install-splunk-cluster)
+    install_splunk_cluster
+    exitStatus=$?
+    ;;
+  setup-noformat)
+    caspida_setup noformat
+    ;;
+  setupfirewall-cluster)
+    setup_firewall_cluster
+    exitStatus=$?
+    if [[ exitStatus -ne 0 ]]; then
+      msg="setup firewall failed fix the errors and try again"
+      echo $msg
+      echo "$(date): ${msg}" >> ${CASPIDA_OUT}
+      exit 1
+    fi
+    enable_firewall_cluster
+    exitStatus=$?
+    ;;
+  disablefirewall) # disables firewall on localhost
+    disable_firewall "localhost"
+    exitStatus=$?
+    ;;
+  disablefirewall-cluster) # disables firewall on all nodes in the cluster
+    disable_firewall_cluster
+    exitStatus=$?
+    ;;
+  enablefirewall-cluster) # enables firewall on all nodes in the cluster
+    enable_firewall_cluster
+    exitStatus=$?
+    ;;
+  cleanup-kafka-topics)
+    cleanup_kafka_topics
+    ;;
+  clean-ircache) # DO NOT use this option without guide from support
+    action_stop
+    #function called from CaspidaFunctions
+    cleanupKafka
+    hadoop fs -rm -r ir
+    action_start
+    ;;
+  tune-configuration-cluster)
+    tune_configuration_cluster $2
+    exitStatus=$?
+    ;;
+  setupfirewall) # sets up firewall only on this node
+    ips=$2
+    # Make sure we are getting IPs not hostnames
+    for ip in ${ips//,/ }
+    do
+      is_ip_address ${ip}
+      isIP=$?
+      if [[ ${isIP} -ne 0 ]]; then
+        echo "  use IP addresss(es) only not hostname(s): ${ip}, aborting"
+        exit 1
+      fi
+    done
+    checkSSHConnectivity
+    if [ "${PLATFORM}" = "Red Hat" ] || [ "${PLATFORM}" = "CentOS" ]; then
+      if [ "${KERNEL_RELEASE}" = "el6" ];  then
+        iptables_rules_setup $2
+      elif [ "${KERNEL_RELEASE}" = "el7" ] || [ "${KERNEL_RELEASE}" = "el8" ];  then
+        firewalld_rules_setup $2
+      fi
+    elif [ "${PLATFORM}" = "Ubuntu" ]; then
+      #iptables_rules_setup $2
+      ufw_rules_setup $2
+    else
+      "echo PLATFORM ${PLATFORM} not supported"
+    fi
+
+    echo
+    ;;
+  setup)
+    # options: setup <filename> [--create-conf-only]
+    ResponseFile="$2"
+    CreateConfOnly="false"
+    Options="$3"
+    if [[ -n ${Options} ]]; then
+      if [[ "${Options}" == "--create-conf-only" ]]; then
+        CreateConfOnly="true"
+      else
+        echo "$(date): unknown option: "${Options}", exiting"
+        exit 1;
+      fi
+    fi
+
+    # check if is a non-interactive setup
+    is_non_interactive_setup "${ResponseFile}"
+
+    eula
+    echo ""
+    echo "Running Setup"
+
+    echo "All existing metadata will be removed."
+    echo -n "Sure (Yy/Nn) : "
+    if [[ ! -z ${prompt_response} ]]; then
+      x=${prompt_response}
+    else
+      read x
+    fi
+
+    if [[ "$x" =~ [yY] ]]; then
+      echo ""
+    else
+      echo "Setup Cancelled as per user request"
+      exit 0
+    fi
+
+    #Call deployment configuration before proceeding for setup
+    performDeploymentConfiguration
+
+    if [  ! -f $deploymentConfFile ]; then
+      echo "$(date): [ERROR] Failed to find deployment conf: $deploymentConfFile, aborting"
+      exit 5
+    fi
+
+    if [ "$caspidaclusternodes" == "" ]; then
+      echo "$(date): [ERROR] Failed to get 'caspidaclusternodes' from deployment conf, aborting"
+      exit 5
+    fi
+
+    ${CASPIDA_BIN_DIR}/Caspida replace-properties
+    status=$?
+    if [[ ${status} -ne 0 ]]; then
+      echo "Caspida replace-properties failed with status=${status}, aborting"
+      exit 5
+    fi
+
+    #
+    # Source the environment after performing replace-properties
+    #
+    source ${DIR}/CaspidaCommonEnv.sh
+    source ${DIR}/CaspidaFunctions
+
+    # create skeleton uba-site.properties for site specific configuration
+    create_uba_site_prop_template
+
+    # reset globals after writing properties file
+    MYIP=`getmyip`
+    AssertMYIPNotEmpty "true"
+
+    #
+    # ${CASPIDA_USER} and ${CASPIDA_GROUP} is set after replace-properties
+    # Setting up file permissions for deploymentconf on all the nodes
+    # after replace-properties.
+    #
+    chown -R ${CASPIDA_USER}:${CASPIDA_GROUP} /opt/caspida
+    chmod -R 755 /opt/caspida
+
+    sync_cluster /opt/caspida/conf
+
+    date >> ${CASPIDA_OUT} 2>&1
+    echo "...."
+
+    echo "Dumping SSH key info"
+    ssh_key_info
+
+    # not required to stop all when creating conf only
+    if [[ "${CreateConfOnly}" != "true" ]]; then
+      echo "Stopping all services"
+      caspida_stop
+      startstopAllServices "stop"
+      disable_systemd_services
+      echo "...."
+    fi
+
+    echo "Setting up firewall on all nodes"
+    setup_firewall_cluster
+    if [[ $? -ne 0 ]]; then
+      msg="Setting up firewall cluster on nodes failed see ${CASPIDA_OUT} for details, aborting setup"
+      echo ${msg}
+      echo "$(date): ${msg}" >> ${CASPIDA_OUT}
+      exit 1;
+    fi
+
+    echo "Creating uba-site.properties template on all nodes"
+    create_uba_site_prop_template_cluster
+    if [[ $? -ne 0 ]]; then
+      msg="Creating uba-site.properties template file on nodes failed see ${CASPIDA_OUT} for details, aborting setup"
+      echo ${msg}
+      echo "$(date): ${msg}" >> ${CASPIDA_OUT}
+      exit 1;
+    fi
+
+    echo "Tuning configuration on all nodes"
+    tune_configuration_cluster
+    if [[ $? -ne 0 ]]; then
+      msg="Tuning configuration on nodes failed see ${CASPIDA_OUT} for details, aborting setup"
+      echo ${msg}
+      echo "$(date): ${msg}" >> ${CASPIDA_OUT}
+      exit 1;
+    fi
+
+    if [[ "${CreateConfOnly}" == "true" ]]; then
+      echo "$(date): created configuration as specified, exiting"
+      exit 0;
+    fi
+
+    # disable fw and check if the ports are reachable. Try redis-cli with a timeout
+    # ${CASPIDA_BIN_DIR}/Caspida disablefirewall-cluster
+    CheckIfPortsOpen
+    if [ $? -ne 0 ]; then
+      echo "Refer to installation instructions for the list of ports that are"
+      echo "  required to be open between the caspida cluster nodes: $caspidaclusterips"
+      echo "    Aborting setup"
+      exit 2
+    fi
+
+    caspida_setup
+    if [[ $? -ne 0 ]]; then
+      msg="setup failed fix the errors and try again"
+      echo $msg
+      echo "$(date): ${msg}" >> ${CASPIDA_OUT}
+      exit 1
+    fi
+    echo ""
+
+    msg="Creating SecurityJar"
+    echo "${msg}"
+    echo "$(date): ${msg}" >> ${CASPIDA_OUT}
+    ${CASPIDA_BIN_DIR}/CreateCaspidaSecurityJar.py >> ${CASPIDA_OUT} 2>&1
+
+    # sync the following:
+    #  - /opt/caspida/lib/CaspidaSecurity.jar
+    sync_cluster
+
+    msg="Starting Caspida services"
+    echo "${msg}"
+    echo "$(date): ${msg}" >> ${CASPIDA_OUT}
+    startstopAllServices "start" "setup"
+
+    create_caspidadb_firstrun
+    echo "Configuring Metadata store, might take a while..."
+    sleep 20
+
+    # if setup_containerization fails during setup, then dont have to do setup
+    #  again. Just run:
+    #   1. ${CASPIDA_BIN_DIR}/Caspida setup-containerization
+    #     fix the problems that causes setup-containerization to fail
+    #   2. ${CASPIDA_BIN_DIR}/CaspidaCleanup -i rules
+    if [ "${IsContainerDeployment}" = "true" ]; then
+      setup_containerization
+
+      # sync the following:
+      #  - /etc/caspida/local/conf/containerization/kubeadm-conf.yaml
+      #  - /etc/caspida/local/conf/containerization/containerization.properties
+      sync_cluster
+    fi
+
+    # starting impala containers, it needs to be called after setup_containerization
+    start_impala
+
+    msg="Running CaspidaCleanup, resetting rules"
+    echo $msg
+    ${CASPIDA_BIN_DIR}/CaspidaCleanup -i rules >> ${CASPIDA_OUT} 2>&1
+    if [[ $? -ne 0 ]]; then
+      msg="CaspidaCleanup failed, exiting"
+      echo $msg
+      echo "$(date): ${msg}" >> ${CASPIDA_OUT}
+      exit 1
+    fi
+
+    # CaspidaCleanup -i rules internally calls install_rules_systempackages,
+    # so dont have to do it again.
+
+    msg="Setup finished successfully"
+    echo ${msg}
+    echo "$(date): ${msg}" >> ${CASPIDA_OUT} 2>&1
+
+    # Setup standby server.  We are setting up at the end, because the setup for
+    # standby needs primary up and running. Following will ssh to standby node and
+    # configure
+    setup_postgres_standby
+
+    # Setup forward server if forwarder is enabled
+    setup_splunk_forwarder
+
+    # enable fw
+    ${CASPIDA_BIN_DIR}/Caspida enablefirewall-cluster
+
+    msg="Setup Done...."
+    echo ${msg}
+    echo "$(date): ${msg}" >> ${CASPIDA_OUT} 2>&1
+    ;;
+
+  stop-all)
+    check_if_master_node
+    if [ $? -ne 0 ]; then
+      echo ${NotMasterErrMsg}
+      exit 1
+    fi
+
+    caspida_stop
+    startstopAllServices "stop"
+    if [ "$2" = "--force" ]; then
+      stop_all_java_procs
+    fi
+    disable_systemd_services
+
+    echo
+    ;;
+  start-all)
+    check_if_master_node
+    if [ $? -ne 0 ]; then
+      echo ${NotMasterErrMsg}
+      exit 1
+    fi
+
+    # the interface name changes sometimes after a reboot, make sure that
+    # we are still on the interface that we setup with
+    AssertMYIPNotEmpty "false"
+
+    # start other services before docker: the containers take a bunch of ephemeral ports
+    # which can prevent hdfs from starting up
+    startstopAllServices "start"
+
+    # setup containerization if not done before else just start kubelet & docker services
+    if [ "${IsContainerDeployment}" = "true" ]; then
+      if [ ! -f ${KUBE_ADMIN_CONF} ]; then
+        echo "setup containerization as not done before"
+
+        # setup container master & workers
+        setup_containerization
+      fi
+    fi
+
+    # if --no-caspida is specified, dont start caspida
+    if [ "$2" = "--no-caspida" ]; then
+      echo "skipped starting caspida (as requested with: $2)"
+    else
+      caspida_start $2
+    fi
+    ;;
+  start-service)
+    start_service $2
+    ;;
+  stop-service)
+    stop_service $2
+    ;;
+  remove-containerization)
+    remove_containerization
+    ;;
+  zookeeper_setup)
+    zookeeper_setup $2 $3 $4 $5
+    exitStatus=$?
+    ;;
+  stop-ui)
+    stop_ui
+    ;;
+  start-ui)
+    start_ui
+    ;;
+  stop-spark)
+    stop_spark
+    ;;
+  start-spark)
+    start_spark
+    ;;
+  restart-spark)
+    stop_spark
+    start_spark
+    ;;
+  restart-spark-core-services) # It will only restart spark master/worker/history but not the UBA Spark server
+    stop_spark false
+    start_spark false
+    ;;
+  cancel-current-spark-job) # Same as restart-spark-core-services (will cancel current job and will not retry)
+    stop_spark false
+    sleep 20
+    start_spark false
+    ;;
+  tune-configuration)
+    tune_configuration $2
+    ;;
+  add-content-info)
+    # the $2 is: --upgrade to re-import the lists, typically at platform upgrade
+    subscription_content_postinstall $2
+    exitStatus=$?
+    ;;
+  create-uba-site)
+    create_uba_site_prop_template
+    ;;
+  stop-redis)
+    stop_redis
+    exitStatus=$?
+    ;;
+  start-redis)
+    start_redis
+    exitStatus=$?
+    ;;
+  setup-redis-cluster)
+    setup_redis_cluster
+    exitStatus=$?
+    ;;
+  verify-redis-startup)
+    verify_redis_startup
+    exitStatus=$?
+    ;;
+  stop-kafka)
+    stop_kafka
+    ;;
+  start-kafka)
+    start_kafka
+    ;;
+  update-kafka-topics)
+    # Same provisioning will both create and update the topics
+    create_kafka_topics
+    ;;
+  start-splunk)
+    start_splunk
+    exitStatus=$?
+    ;;
+  stop-splunk)
+    stop_splunk
+    ;;
+  start-splunkd)
+    start_splunkd
+    exitStatus=$?
+    ;;
+  stop-splunkd)
+    stop_splunkd
+    ;;
+  switch-splunk-index)
+    switch_splunk_index
+    ;;
+  setup-splunk-forwarder)
+    setup_splunk_forwarder
+    ;;
+  sync-cluster)
+    check_if_master_node
+    if [ $? -ne 0 ]; then
+      echo ${NotMasterErrMsg}
+      exit 1
+    fi
+    sync_cluster "$2" "$3"
+    exitStatus=$?
+    ;;
+  stop-datasources)
+    stop_datasources
+    ;;
+  start-datasources)
+    # can start only live jobs..
+    restart_stopped_live_datasources
+    ;;
+  print-interface)
+    iface=`findNetworkInterface`
+    echo "found interface:$iface"
+    ;;
+  print-ip)
+    echo "ip=$MYIP"
+    ;;
+  containerization-create-token)
+    containerization_create_token $2 # "false" to skip creating user
+    exitStatus=$?
+    ;;
+  rebuild-uba-images)
+    build_uba_image
+    if [[ $? -ne 0 ]]; then
+      msg="failed to build UBA image: see ${CASPIDA_OUT} for details, aborting"
+      echo $msg
+      echo "$(date): ${msg}" >> ${CASPIDA_OUT}
+      exit 3
+    fi
+    tag_and_push_images "true"
+    exitStatus=$?
+    ;;
+  tune-postgres)
+    postgres_tune_allnodes
+    exitStatus=$?
+    ;;
+  setup-postgres-standby)
+    setup_postgres_standby
+    exitStatus=$?
+    ;;
+  setup-standby)
+    setup_standby
+    exitStatus=$?
+    ;;
+  start-postgres)
+    start_postgres
+    exitStatus=$?
+    ;;
+  stop-postgres)
+    stop_postgres
+    exitStatus=$?
+    ;;
+  start-impala)
+    start_impala
+    exitStatus=$?
+    ;;
+  stop-impala)
+    stop_impala
+    exitStatus=$?
+    ;;
+  stop-container-services)
+    # stops kubelet & docker on all nodes
+    # check if containers are running & log a message to stop them if they are.
+    is_uba_containers_running "true" # log error
+    status=$?
+    exitStatus=0
+    if [[ ${status} -eq 0 ]]; then
+      # not running: we can do a stop
+      stop_start_container_services "stop"
+      exitStatus=$?
+    elif [[ ${status} -eq 1 ]]; then
+      # kubelet/docker already down.
+      write_message "  container-services may already be down. check" \
+        "sudo service kubelet status; sudo service docker status on all nodes"
+      exitStatus=0
+    elif [[ ${status} -eq 2 ]]; then
+      # our containers running
+      write_message "  UBA containers are in 'Terminating' state, try after some time"
+      exitStatus=3
+    elif [[ ${status} -eq 3 ]]; then
+      write_message "  UBA containers are in 'Active' state, run ${CASPIDA_BIN_DIR}/Caspida stop-containers first"
+      exitStatus=4
+    else
+      echo "  unknown state of container-services, aborting"
+      exitStatus=5
+    fi
+    ;;
+  start-container-services)
+    # starts kubelet & docker on all nodes
+    is_uba_containers_running "false" # don't log error
+    status=$?
+    if [[ ${status} -eq 0 ||  ${status} -eq 2 || ${status} -eq 3 ]]; then
+      write_message "  container-services are already up"
+      exitStatus=0
+    elif [[ ${status} -eq 1 ]]; then
+      # kubelet down, we can start safely
+      stop_start_container_services "start"
+      exitStatus=$?
+    else
+      echo "  unknown state of container-services, aborting"
+      exitStatus=5
+    fi
+    ;;
+  *)
+    usage
+    ;;
+esac
+
+exit $exitStatus
+

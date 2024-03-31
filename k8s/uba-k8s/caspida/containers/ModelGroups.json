@@ -1,0 +1,148 @@
+{
+  "version": "0.7",
+  "groupModels": "all",
+  "modelGroups": [
+    {
+      "seqNum": 0,
+      "key": "anomalytopic_true_false_batchofevents",
+      "topicName": "AnomalyTopic",
+      "maxWeight": 5,
+      "groupName": "AnomalyAggregationModel",
+      "memoryLimit": "128M",
+      "currWeight": 1,
+      "modelInfo": [
+        {
+          "name": "AnomalyAggregationModel",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "seqNum": 1,
+      "key": "devicetopic_false_true_groupedevents",
+      "topicName": "DeviceTopic",
+      "maxWeight": 3,
+      "groupName": "devicetopic-modelgroup01",
+      "memoryLimit": "3G",
+      "currWeight": 3,
+      "modelInfo": [
+        {
+          "name": "DeviceExploitChainModel",
+          "weight": 1
+        },
+        {
+          "name": "IpTrafficBeaconStreamDetection",
+          "weight": 1
+        },
+        {
+          "name": "WebBeaconStreamDetection",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "seqNum": 1,
+      "key": "domaintopic_false_true_batchofevents",
+      "topicName": "DomainTopic",
+      "maxWeight": 3,
+      "groupName": "domaintopic-modelgroup01",
+      "memoryLimit": "4G",
+      "currWeight": 2,
+      "modelInfo": [
+        {
+          "name": "MalwareCommunication",
+          "weight": 1
+        },
+        {
+          "name": "WebShellDetection",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "seqNum": 0,
+      "key": "eventtopic_false_true_groupedevents",
+      "topicName": "EventTopic",
+      "maxWeight": 3,
+      "groupName": "UTHourPerUserModel",
+      "memoryLimit": "2G",
+      "currWeight": 1,
+      "modelInfo": [
+        {
+          "name": "UTHourPerUserModel",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "seqNum": 1,
+      "key": "eventtopic_false_true_groupedevents",
+      "topicName": "EventTopic",
+      "maxWeight": 3,
+      "groupName": "eventtopic-modelgroup01",
+      "memoryLimit": "2G",
+      "currWeight": 3,
+      "modelInfo": [
+        {
+          "name": "AdPstIocGenerationModel",
+          "weight": 1
+        },
+        {
+          "name": "LandSpeedViolationModel",
+          "weight": 1
+        },
+        {
+          "name": "UTDayPerUserModel",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "seqNum": 2,
+      "key": "eventtopic_true_false_batchofevents",
+      "topicName": "EventTopic",
+      "maxWeight": 5,
+      "groupName": "eventtopic-modelgroup02",
+      "memoryLimit": "1G",
+      "currWeight": 4,
+      "modelInfo": [
+        {
+          "name": "AuthenticationViewFixedLogic",
+          "weight": 1
+        },
+        {
+          "name": "ExternalAttackModel",
+          "weight": 1
+        },
+        {
+          "name": "NetworkTransportModel",
+          "weight": 1
+        },
+        {
+          "name": "PowershellStreamingModel",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "seqNum": 3,
+      "key": "eventtopic_true_false_default",
+      "topicName": "EventTopic",
+      "maxWeight": 5,
+      "groupName": "eventtopic-modelgroup03",
+      "memoryLimit": "2G",
+      "containerGroup": "epsgroup",
+      "currWeight": 5,
+      "modelInfo": [
+        {
+          "name": "BatchAggregatesModel",
+          "weight": 3
+        },
+        {
+          "name": "StatisticalAggregatesModel",
+          "weight": 2
+        }
+      ]
+    }
+  ]
+}

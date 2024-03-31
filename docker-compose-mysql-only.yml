@@ -1,0 +1,24 @@
+version: '3.8'
+services:
+  mysql-database:
+    image: mysql:8-oracle
+    container_name: uba-mysql-8
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_DATABASE: uba-db
+      MYSQL_USER: uba-db-user
+      MYSQL_ROOT_PASSWORD: mysecret
+      MYSQL_PASSWORD: mysecret
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+    ports:
+      - "3306:3306"
+    expose:
+      - "3306"
+    volumes:
+      - uba-data-volume:/var/lib/mysql
+      - ./uba-data-volume/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+volumes:
+  uba-data-volume:
+    driver: local

@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="00b3f87f-edc0-45e1-89a0-2118f145ca79" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/.idea/compiler.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/encodings.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/jarRepositories.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docker-compose-acccounts-only.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docker-compose-mysql-only.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docker-compose.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/docker-demo.postman_collection.json" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/deprecated/uba-accounts-cluster-ip-service.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/deprecated/uba-mysql-pv.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/deprecated/uba-mysql-secrets.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/deprecated/uba-mysql-user-config-map.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/dev/uba-accounts-node-port.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/dev/uba-accounts-pod.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/dev/uba-mysql-config-map.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/prod/uba-accounts-deployment.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/prod/uba-accounts-node-port-service.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/prod/uba-ingress-service.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/prod/uba-mysql-deployment.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/prod/uba-mysql-pvc.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/prod/uba-mysql-service.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ModelGroups.json" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ubaanalytics/analyticsaggregator.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ubaanalytics/analyticsviewsbuilder.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ubaanalytics/analyticswriter.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ubaparsers/etl.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ubaparsers/identityresolver.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ubastreamingmodels/anomalyaggregationmodel.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ubastreamingmodels/devicetopic-modelgroup01.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ubastreamingmodels/domaintopic-modelgroup01.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ubastreamingmodels/eventtopic-modelgroup01.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ubastreamingmodels/eventtopic-modelgroup02.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ubastreamingmodels/eventtopic-modelgroup03.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers-changed/ubastreamingmodels/uthourperusermodel.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ModelGroups.json" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ubaanalytics/analyticsaggregator.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ubaanalytics/analyticsviewsbuilder.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ubaanalytics/analyticswriter.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ubaparsers/etl.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ubaparsers/identityresolver.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ubastreamingmodels/anomalyaggregationmodel.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ubastreamingmodels/devicetopic-modelgroup01.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ubastreamingmodels/domaintopic-modelgroup01.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ubastreamingmodels/eventtopic-modelgroup01.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ubastreamingmodels/eventtopic-modelgroup02.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ubastreamingmodels/eventtopic-modelgroup03.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/k8s/uba-k8s/caspida/containers/ubastreamingmodels/uthourperusermodel.yaml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/podman-compose-mysql-only.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/podman-compose.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/pom.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/containerization/bin/BuildUBAImage.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/containerization/bin/CleanupKubeNetworking.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/containerization/bin/StartRegistry.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/containerization/bin/StopRegistry.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/containerization/docker/impala/Dockerfile" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/installation/INSTALL.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/installation/install_containerization.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/scripts/Caspida" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/scripts/CaspidaFunctions" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/scripts/CaspidaResourcesMonitor.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/scripts/CreateCaspidaSecurityJar.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/scripts/utils/uba_health_check.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/scripts/utils/uba_pre_check.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/upgrade/utils/install_containerization.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-5.3.0/utils/installer/native/redhat/INSTALL.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-accounts/.gitignore" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-accounts/pom.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-accounts/src/main/java/com/dummy/uba/ubaaccounts/UbaAccountsApplication.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-accounts/src/main/java/com/dummy/uba/ubaaccounts/entity/Account.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-accounts/src/main/java/com/dummy/uba/ubaaccounts/entity/BaseEntity.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-accounts/src/main/java/com/dummy/uba/ubaaccounts/jpa/AccountRepository.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-accounts/src/main/java/com/dummy/uba/ubaaccounts/resource/AccountsResource.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-accounts/src/main/java/com/dummy/uba/ubaaccounts/service/AccountService.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-accounts/src/main/resources/application.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-accounts/src/main/resources/bootstrap.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-accounts/src/test/java/com/dummy/uba/ubaaccounts/UbaAccountsApplicationTests.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-etl/.gitignore" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-etl/pom.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-etl/src/main/java/com/dummy/uba/ubaetl/UbaEtlApplication.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-etl/src/main/java/com/dummy/uba/ubaetl/resource/EtlResource.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-etl/src/main/java/com/dummy/uba/ubaetl/service/EtlService.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-etl/src/main/resources/application.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-etl/src/main/resources/bootstrap.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-etl/src/test/java/com/dummy/uba/ubaetl/UbaEtlApplicationTests.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/.gitignore" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/pom.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/main/java/com/dummy/uba/ubaevents/UbaEventsApplication.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/main/java/com/dummy/uba/ubaevents/entity/BaseEntity.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/main/java/com/dummy/uba/ubaevents/entity/Datasource.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/main/java/com/dummy/uba/ubaevents/entity/Event.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/main/java/com/dummy/uba/ubaevents/jpa/DatasourceRepository.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/main/java/com/dummy/uba/ubaevents/jpa/EventRepository.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/main/java/com/dummy/uba/ubaevents/resource/DatasourceResource.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/main/java/com/dummy/uba/ubaevents/resource/EventResource.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/main/java/com/dummy/uba/ubaevents/service/DatasourceService.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/main/java/com/dummy/uba/ubaevents/service/EventService.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/main/resources/application.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/main/resources/bootstrap.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-events/src/test/java/com/dummy/uba/ubaevents/UbaEventsApplicationTests.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-ir/.gitignore" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-ir/pom.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-ir/src/main/java/com/dummy/uba/ubair/UbaIrApplication.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-ir/src/main/java/com/dummy/uba/ubair/resource/IrResource.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-ir/src/main/java/com/dummy/uba/ubair/service/IrService.java" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-ir/src/main/resources/application.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-ir/src/main/resources/bootstrap.yml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/uba-ir/src/test/java/com/dummy/uba/ubair/UbaIrApplicationTests.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="CodeStyleSettingsInfer">
+    <option name="done" value="true" />
+  </component>
+  <component name="ComposerSettings">
+    <execution />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="MarkdownSettingsMigration">
+    <option name="stateVersion" value="1" />
+  </component>
+  <component name="ProjectCodeStyleSettingsMigration">
+    <option name="version" value="2" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 0
+}</component>
+  <component name="ProjectId" id="2VuYUBTZgTEYQowr7gehwQPpeGh" />
+  <component name="ProjectLevelVcsManager" settingsEditedManually="true">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ASKED_ADD_EXTERNAL_FILES": "true",
+    "RequestMappingsPanelOrder0": "0",
+    "RequestMappingsPanelOrder1": "1",
+    "RequestMappingsPanelWidth0": "75",
+    "RequestMappingsPanelWidth1": "75",
+    "RunOnceActivity.OpenProjectViewOnStart": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "WebServerToolWindowFactoryState": "false",
+    "jdk.selected.JAVA_MODULE": "20",
+    "kotlin-language-version-configured": "true",
+    "last_opened_file_path": "/Users/sujitksingh/Workspace/docker-podman-demo",
+    "nodejs_package_manager_path": "npm",
+    "project.structure.last.edited": "SDKs",
+    "project.structure.proportion": "0.15",
+    "project.structure.side.proportion": "0.2",
+    "settings.editor.selected.configurable": "reference.projectsettings.compiler.javacompiler",
+    "spring.configuration.checksum": "c6136b30b7b823076fad1fd83b4271b4"
+  }
+}]]></component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$" />
+      <recent name="$PROJECT_DIR$/uba-ir/src/main" />
+      <recent name="$PROJECT_DIR$/uba-ir" />
+      <recent name="$PROJECT_DIR$/uba-etl/src/main" />
+      <recent name="$PROJECT_DIR$/uba-etl" />
+    </key>
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$" />
+      <recent name="$PROJECT_DIR$/uba-5.3.0/scripts/utils" />
+      <recent name="$PROJECT_DIR$/uba-5.3.0" />
+      <recent name="$PROJECT_DIR$/uba-5.3.0/containerization" />
+      <recent name="$PROJECT_DIR$/uba-5.3.0/containerization.bin/bin" />
+    </key>
+  </component>
+  <component name="RunDashboard">
+    <option name="configurationTypes">
+      <set>
+        <option value="SpringBootApplicationConfigurationType" />
+      </set>
+    </option>
+  </component>
+  <component name="RunManager">
+    <configuration default="true" type="JetRunConfigurationType">
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+    <configuration default="true" type="KotlinStandaloneScriptRunConfigurationType">
+      <option name="filePath" />
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+    <configuration name="DockerPodmanDemoApplication" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+      <module name="docker-podman-demo" />
+      <option name="SPRING_BOOT_MAIN_CLASS" value="com.dummy.uba.dockerpodmandemo.DockerPodmanDemoApplication" />
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+    <configuration name="UbaAccountsApplication" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+      <module name="uba-accounts" />
+      <option name="SPRING_BOOT_MAIN_CLASS" value="com.dummy.uba.ubaaccounts.UbaAccountsApplication" />
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+    <configuration name="UbaEtlApplication" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+      <module name="uba-etl" />
+      <option name="SPRING_BOOT_MAIN_CLASS" value="com.dummy.uba.ubaetl.UbaEtlApplication" />
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+    <configuration name="UbaEventsApplication" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+      <module name="uba-events" />
+      <option name="SPRING_BOOT_MAIN_CLASS" value="com.dummy.uba.ubaevents.UbaEventsApplication" />
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+    <configuration name="UbaIrApplication" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot">
+      <module name="uba-ir" />
+      <option name="SPRING_BOOT_MAIN_CLASS" value="com.dummy.uba.ubair.UbaIrApplication" />
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+  </component>
+  <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="application-level" UseSingleDictionary="true" transferred="true" />
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="00b3f87f-edc0-45e1-89a0-2118f145ca79" name="Changes" comment="" />
+      <created>1695687446235</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1695687446235</updated>
+      <workItem from="1695687447631" duration="17712000" />
+      <workItem from="1695794152525" duration="16842000" />
+      <workItem from="1695963616126" duration="53429000" />
+      <workItem from="1696394217301" duration="245000" />
+      <workItem from="1696427324098" duration="5829000" />
+      <workItem from="1697044447999" duration="3351000" />
+      <workItem from="1697436628541" duration="931000" />
+      <workItem from="1697556537435" duration="403000" />
+      <workItem from="1698690114003" duration="1987000" />
+      <workItem from="1698953625081" duration="2497000" />
+      <workItem from="1699242907232" duration="1199000" />
+      <workItem from="1699385023059" duration="1271000" />
+      <workItem from="1703011119697" duration="686000" />
+      <workItem from="1703257665422" duration="1140000" />
+      <workItem from="1704209160730" duration="600000" />
+      <workItem from="1704352340523" duration="1720000" />
+      <workItem from="1704439156611" duration="600000" />
+      <workItem from="1704730519085" duration="3738000" />
+      <workItem from="1705422051524" duration="599000" />
+      <workItem from="1705522060617" duration="600000" />
+      <workItem from="1710261356664" duration="1362000" />
+      <workItem from="1710290094974" duration="4692000" />
+      <workItem from="1710780780550" duration="16154000" />
+      <workItem from="1711454581849" duration="2674000" />
+      <workItem from="1711819782602" duration="3458000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <option name="ADD_EXTERNAL_FILES_SILENTLY" value="true" />
+  </component>
+</project>

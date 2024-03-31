@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysqldb
+  labels:
+    app: mysqldb
+    tier: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysqldb
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: mysqldb
+        tier: database
+    spec:
+      containers:
+        - name: mysqldb
+          image: mysql:8-oracle # Image from docker hub
+          imagePullPolicy: "IfNotPresent"
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: mysecret
+            - name: MYSQL_DATABASE
+              value: uba-db
+          ports:
+            - containerPort: 3306
+              name: mysqldb
+          volumeMounts: # Mounting volume obtained from Persistent Volume Claim
+            - name: uba-mysql-persistent-storage
+              mountPath: /var/lib/mysql
+      volumes:
+        - name: uba-mysql-persistent-storage # Obtaining 'volume' from PVC
+          persistentVolumeClaim:
+            claimName: uba-mysql-pv-claim
+        #- name: mysql-initdb
+          #configMap:
+            #name: initdb

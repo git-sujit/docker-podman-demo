@@ -1,0 +1,50 @@
+server:
+  port: 8003
+logging:
+  level:
+    root: INFO
+security:
+  basic:
+    enabled: false
+  user:
+    name: admin
+    password: password
+management:
+  endpoints:
+    web:
+      exposure:
+        include: '*'
+  endpoint:
+    health:
+      show-details: ALWAYS
+spring:
+  application:
+    name: uba-etl
+  datasource:
+    #url: jdbc:h2:mem:testdb
+    #url: jdbc:postgresql://localhost:9876/postgres
+    # Access DB from non-containerized(local) service
+    url: jdbc:mysql://mysqldb:3306/uba-db
+    # Access DB from Containerized service
+    #url: jdbc:mysql://db:3306/uba-db
+    username: uba-db-user
+    password: mysecret
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    database: MYSQL
+    generate-ddl: false
+    show-sql: true
+    defer-datasource-initialization: true
+    hibernate:
+      ddl-auto: update
+      naming:
+        # To create DB column name same as POJO attributes
+        implicit-strategy: org.hibernate.boot.model.naming.ImplicitNamingStrategyLegacyJpaImpl
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+    database-platform: org.hibernate.dialect.MySQLDialect
+    properties:
+      hibernate:
+        generate_statistics: false
+        format_sql: false
+    open-in-view: off
+

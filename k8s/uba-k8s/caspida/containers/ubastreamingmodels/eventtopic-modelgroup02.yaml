@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: ReplicationController
+metadata:
+  name: eventtopic-modelgroup02-rc
+  namespace: splunkuba
+spec:
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: eventtopic-modelgroup02 # modelname from ModelRegistry or serviceName from micro_services.json for others
+        uba-serviceName: realtimemodels # serviceName from micro_services.json
+        uba-groupName:   ubastreamingmodels   # groupName  from micro_services.json
+        uba-displayName: UBA_Streaming_Models_eventtopic-modelgroup02 # displayName from ModelRegistry or from micro_services.json for others
+    spec:
+      hostAliases : [{"ip":"10.141.39.46","hostnames":["sujits-uba53-rhel-k8s-01.sv.splunk.com","sujits-uba53-rhel-k8s-01"]},{"ip":"10.141.39.205","hostnames":["sujits-uba53-rhel-k8s-02.sv.splunk.com","sujits-uba53-rhel-k8s-02"]},{"ip":"10.141.39.184","hostnames":["sujits-uba53-rhel-k8s-03.sv.splunk.com","sujits-uba53-rhel-k8s-03"]}]
+      containers:
+      # Run the image
+      - name: eventtopic-modelgroup02
+        image: sujits-uba53-rhel-k8s-01:5000/ubabase:latest
+        imagePullPolicy: Always
+        # StartScript: /opt/caspida/bin/UBAFunctionExecutor
+        command: [ /opt/caspida/bin/UBAFunctionExecutor, com.caspida.streaming.docker.KafkaModelFunctionExecutor, -n, splunkuba, -G, eventtopic-modelgroup02, -f, AuthenticationViewFixedLogic, -f, ExternalAttackModel, -f, NetworkTransportModel, -f, PowershellStreamingModel ]
+        env:
+        - name: UBA_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: UBA_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: UBA_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: UBA_HOSTIP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        - name: UBA_NODENAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+
+        - name: UBA_POD_MAXHEAP
+          value: 1G
+        - name: UBA_POD_GROUPNAME
+          value: ubastreamingmodels
+        - name: RUN_AS_USER # not used currently
+          value: 
+        - name: RUN_AS_GROUP
+          value: 
+
+        livenessProbe:
+          exec:
+            command: [ /opt/caspida/bin/ContainerLivenessProbe.sh ]
+          initialDelaySeconds: 900 # start after 15 minutes
+          periodSeconds: 900  # run every 15 minutes
+          timeoutSeconds: 60
+          failureThreshold: 2 # fail twice before deciding to restart
+
+        volumeMounts:
+        - mountPath: /var/vcap/sys/log/caspida/containerization
+          name: log-volume
+          readOnly: false
+        lifecycle:
+          postStart:
+            exec:
+              command: [ /opt/caspida/bin/ContainerLifecycleHook.sh, startup ]
+          preStop:
+            exec:
+              command: [/opt/caspida/bin/ContainerLifecycleHook.sh, shutdown]
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: log-volume
+        hostPath:
+        # directory location on host
+          path: /var/vcap/sys/log/caspida/containerization

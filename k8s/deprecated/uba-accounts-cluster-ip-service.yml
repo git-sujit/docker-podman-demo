@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: uba-accounts-cluster-ip-service
+spec:
+  type: ClusterIP
+  selector:
+    component: ubaAccounts
+  ports:
+    - port: 9001
+      targetPort: 9001
